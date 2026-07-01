@@ -1,0 +1,646 @@
+/* ==========================================================================
+   Swisshost — brutalist theme.
+   Cream base, #c22525 red accent, heavy borders, sharp corners, grid lines.
+   Color tokens are injected as --sh-* custom properties at runtime from
+   src/config.js (see main.jsx). Values below are fallbacks.
+   ========================================================================== */
+
+:root {
+  --sh-cream: #f5f1e8;
+  --sh-paper: #fbf8f1;
+  --sh-ink: #141210;
+  --sh-red: #c22525;
+  --sh-red-dark: #8f1a1a;
+  --sh-muted: #6b655c;
+  --sh-line: #141210;
+  --sh-ok: #1f7a4d;
+  --sh-warn: #b8860b;
+
+  /* Structural tokens */
+  --border: 3px;
+  --border-thick: 5px;
+  --safe: 16px; /* edge padding; grows to a TV safe-zone at large sizes */
+
+  --font-display: 'Archivo Black', 'Arial Black', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Courier New', ui-monospace, monospace;
+
+  /* Fluid type scale — desktop/mobile. TV bumps these up (see bottom). */
+  --fs-base: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 28px;
+  --fs-huge: clamp(2.6rem, 8vw, 5rem);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--sh-cream);
+  /* Faint brutalist grid underlay. */
+  background-image:
+    linear-gradient(to right, rgba(20, 18, 16, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(20, 18, 16, 0.06) 1px, transparent 1px);
+  background-size: 32px 32px;
+  color: var(--sh-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+  margin: 0;
+}
+
+a {
+  color: var(--sh-red);
+}
+
+/* --- Global focus ring: essential for TV D-pad navigation --------------- */
+:focus-visible {
+  outline: var(--border-thick) solid var(--sh-red);
+  outline-offset: 2px;
+}
+/* Older TV engines without :focus-visible — fall back to :focus. */
+button:focus,
+a:focus,
+input:focus,
+[tabindex]:focus {
+  outline: var(--border-thick) solid var(--sh-red);
+  outline-offset: 2px;
+}
+
+/* ---- Layout shell ------------------------------------------------------- */
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: var(--safe);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.masthead {
+  display: flex;
+  align-items: stretch;
+  border: var(--border-thick) solid var(--sh-ink);
+  margin-bottom: var(--safe);
+}
+.masthead .brand {
+  background: var(--sh-red);
+  color: var(--sh-cream);
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: var(--fs-xl);
+  padding: 0.4em 0.7em;
+  letter-spacing: -0.02em;
+  border-right: var(--border-thick) solid var(--sh-ink);
+  display: flex;
+  align-items: center;
+}
+.masthead .tag {
+  display: flex;
+  align-items: center;
+  padding: 0 1em;
+  color: var(--sh-muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ---- Panels & grid ------------------------------------------------------ */
+
+.panel {
+  background: var(--sh-paper);
+  border: var(--border) solid var(--sh-ink);
+  padding: calc(var(--safe) * 1.25);
+}
+.panel + .panel {
+  border-top: none; /* collapse into a shared grid line */
+}
+.panel-title {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  color: var(--sh-red);
+  margin-bottom: 0.75rem;
+  border-bottom: var(--border) solid var(--sh-ink);
+  padding-bottom: 0.4rem;
+}
+
+/* ---- Buttons ------------------------------------------------------------ */
+
+.btn {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-size: var(--fs-lg);
+  background: var(--sh-red);
+  color: var(--sh-cream);
+  border: var(--border) solid var(--sh-ink);
+  padding: 0.7em 1.2em;
+  cursor: pointer;
+  /* Large hit targets for touch + remote */
+  min-height: 56px;
+  box-shadow: 6px 6px 0 var(--sh-ink);
+  transition: transform 80ms steps(2), box-shadow 80ms steps(2), background 80ms;
+}
+.btn:hover {
+  background: var(--sh-red-dark);
+}
+.btn:active,
+.btn:focus {
+  transform: translate(3px, 3px);
+  box-shadow: 3px 3px 0 var(--sh-ink);
+}
+.btn.secondary {
+  background: var(--sh-cream);
+  color: var(--sh-ink);
+}
+.btn.secondary:hover {
+  background: #ece6d8;
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.btn.block {
+  width: 100%;
+}
+
+/* ---- Inputs ------------------------------------------------------------- */
+
+.field {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  text-align: center;
+  background: var(--sh-cream);
+  color: var(--sh-ink);
+  border: var(--border-thick) solid var(--sh-ink);
+  padding: 0.6em 0.4em;
+  min-height: 64px;
+}
+.field::placeholder {
+  color: var(--sh-muted);
+  letter-spacing: 0.2em;
+}
+.text-field {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  background: var(--sh-cream);
+  color: var(--sh-ink);
+  border: var(--border) solid var(--sh-ink);
+  padding: 0.7em;
+  min-height: 52px;
+}
+
+/* ---- Trust banner ------------------------------------------------------- */
+
+.trust {
+  border: var(--border) solid var(--sh-ink);
+  background: var(--sh-ink);
+  color: var(--sh-cream);
+  padding: 0.9rem 1rem;
+  margin-bottom: var(--safe);
+  font-size: 0.9rem;
+}
+.trust strong {
+  color: var(--sh-red);
+}
+.trust .lock {
+  color: var(--sh-red);
+  font-weight: 700;
+}
+
+/* ---- Notices (network warning, fallback) -------------------------------- */
+
+.notice {
+  border: var(--border) solid var(--sh-ink);
+  border-left: var(--border-thick) solid var(--sh-warn);
+  background: var(--sh-paper);
+  padding: 0.9rem 1rem;
+  margin-bottom: var(--safe);
+  display: flex;
+  gap: 0.8rem;
+  align-items: flex-start;
+}
+.notice.error {
+  border-left-color: var(--sh-red);
+}
+.notice .notice-body {
+  flex: 1;
+}
+.notice .dismiss {
+  background: none;
+  border: var(--border) solid var(--sh-ink);
+  font-family: var(--font-display);
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+  line-height: 1;
+}
+
+/* ---- How-this-works ----------------------------------------------------- */
+
+.disclosure summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  padding: 0.6rem 0;
+  list-style: none;
+}
+.disclosure summary::before {
+  content: '▸ ';
+  color: var(--sh-red);
+}
+.disclosure[open] summary::before {
+  content: '▾ ';
+}
+.disclosure .disclosure-body {
+  border-top: var(--border) solid var(--sh-ink);
+  padding-top: 0.8rem;
+  font-size: 0.9rem;
+  color: var(--sh-ink);
+}
+.disclosure ol {
+  padding-left: 1.2em;
+}
+
+/* ---- Home --------------------------------------------------------------- */
+
+.hero h1 {
+  font-size: var(--fs-huge);
+  margin-bottom: 0.2em;
+}
+.hero .sub {
+  color: var(--sh-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+.home-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  border: var(--border-thick) solid var(--sh-ink);
+}
+.home-grid > * {
+  padding: calc(var(--safe) * 1.5);
+}
+.home-grid .start-cell {
+  border-bottom: var(--border) solid var(--sh-ink);
+}
+@media (min-width: 720px) {
+  .home-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .home-grid .start-cell {
+    border-bottom: none;
+    border-right: var(--border) solid var(--sh-ink);
+  }
+}
+.cell-label {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  color: var(--sh-red);
+  margin-bottom: 1rem;
+}
+.join-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* ---- Session ------------------------------------------------------------ */
+
+.session-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  border: var(--border-thick) solid var(--sh-ink);
+  flex: 1;
+  min-height: 0;
+}
+@media (min-width: 900px) {
+  .session-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .session-grid .chat-col {
+    border-right: var(--border) solid var(--sh-ink);
+  }
+}
+.session-grid .chat-col {
+  border-bottom: var(--border) solid var(--sh-ink);
+}
+@media (min-width: 900px) {
+  .session-grid .chat-col {
+    border-bottom: none;
+  }
+}
+.col {
+  display: flex;
+  flex-direction: column;
+  min-height: 340px;
+  padding: var(--safe);
+}
+
+/* Connection status bar */
+.status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  border: var(--border) solid var(--sh-ink);
+  padding: 0.7rem 1rem;
+  margin-bottom: var(--safe);
+  background: var(--sh-paper);
+}
+.pill {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  padding: 0.35em 0.7em;
+  border: var(--border) solid var(--sh-ink);
+}
+.pill.live {
+  background: var(--sh-ok);
+  color: var(--sh-cream);
+}
+.pill.wait {
+  background: var(--sh-warn);
+  color: var(--sh-ink);
+}
+.pill.dead {
+  background: var(--sh-red);
+  color: var(--sh-cream);
+}
+.pill.type {
+  background: var(--sh-ink);
+  color: var(--sh-cream);
+}
+.blink {
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Room code display */
+.code-display {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 9vw, 3.4rem);
+  letter-spacing: 0.15em;
+  background: var(--sh-cream);
+  border: var(--border-thick) solid var(--sh-red);
+  padding: 0.3em 0.4em;
+  text-align: center;
+  margin: 0.5rem 0;
+}
+
+/* ---- Chat --------------------------------------------------------------- */
+
+.chat-log {
+  flex: 1;
+  overflow-y: auto;
+  border: var(--border) solid var(--sh-ink);
+  background: var(--sh-cream);
+  padding: 0.8rem;
+  margin-bottom: 0.8rem;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.msg {
+  max-width: 80%;
+  padding: 0.5rem 0.7rem;
+  border: var(--border) solid var(--sh-ink);
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+.msg.mine {
+  align-self: flex-end;
+  background: var(--sh-red);
+  color: var(--sh-cream);
+}
+.msg.theirs {
+  align-self: flex-start;
+  background: var(--sh-paper);
+}
+.msg .ts {
+  display: block;
+  font-size: 0.65rem;
+  opacity: 0.7;
+  margin-top: 0.25rem;
+}
+.chat-input {
+  display: flex;
+  gap: 0.6rem;
+}
+.chat-input .text-field {
+  flex: 1;
+}
+.empty {
+  color: var(--sh-muted);
+  text-align: center;
+  margin: auto;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ---- File transfer ------------------------------------------------------ */
+
+.dropzone {
+  border: var(--border-thick) dashed var(--sh-ink);
+  background: var(--sh-cream);
+  padding: 1.4rem 1rem;
+  text-align: center;
+  margin-bottom: 0.9rem;
+  cursor: pointer;
+}
+.dropzone.drag {
+  border-color: var(--sh-red);
+  background: #f6e9e6;
+}
+.dropzone .dz-title {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.9rem;
+}
+.dropzone .dz-sub {
+  color: var(--sh-muted);
+  font-size: 0.8rem;
+  margin-top: 0.3rem;
+}
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow-y: auto;
+  flex: 1;
+}
+.transfer {
+  border: var(--border) solid var(--sh-ink);
+  padding: 0.6rem 0.7rem;
+  background: var(--sh-paper);
+}
+.transfer .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  margin-bottom: 0.4rem;
+}
+.transfer .fname {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress {
+  height: 16px;
+  border: var(--border) solid var(--sh-ink);
+  background: var(--sh-cream);
+  overflow: hidden;
+}
+.progress .bar {
+  height: 100%;
+  background: var(--sh-red);
+  transition: width 120ms linear;
+}
+.progress .bar.done {
+  background: var(--sh-ok);
+}
+.dir {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sh-muted);
+}
+.dl-link {
+  display: inline-block;
+  margin-top: 0.4rem;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  border: var(--border) solid var(--sh-ink);
+  padding: 0.3em 0.6em;
+  background: var(--sh-ok);
+  color: var(--sh-cream);
+  text-decoration: none;
+}
+.soft-warn {
+  color: var(--sh-warn);
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+/* ---- Failure screen ----------------------------------------------------- */
+
+.failbox {
+  border: var(--border-thick) solid var(--sh-red);
+  background: var(--sh-paper);
+  padding: calc(var(--safe) * 1.5);
+  text-align: center;
+}
+.failbox h2 {
+  color: var(--sh-red);
+  margin-bottom: 0.6rem;
+}
+.footer {
+  margin-top: var(--safe);
+  color: var(--sh-muted);
+  font-size: 0.75rem;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ==========================================================================
+   TV / 10-foot UI.
+   Applied when the app detects a TV user-agent (html.tv, set in main.jsx) OR
+   at very large viewports. Bigger type/spacing + ~5% safe-zone margins.
+   ========================================================================== */
+
+@media (min-width: 1600px) {
+  :root {
+    --fs-base: 22px;
+    --fs-lg: 28px;
+    --fs-xl: 40px;
+    --safe: 28px;
+  }
+}
+
+html.tv {
+  --fs-base: 24px;
+  --fs-lg: 30px;
+  --fs-xl: 44px;
+  --border: 4px;
+  --border-thick: 7px;
+}
+html.tv body {
+  /* ~5% safe-zone padding so the UI clears TV overscan/bezels. */
+  padding: 5vh 5vw;
+  background-size: 48px 48px;
+}
+html.tv .app {
+  max-width: 1600px;
+}
+html.tv .btn {
+  min-height: 84px;
+}
+html.tv .field {
+  min-height: 96px;
+  font-size: 2.4rem;
+}
+html.tv .text-field {
+  min-height: 72px;
+}
+html.tv :focus-visible,
+html.tv button:focus,
+html.tv a:focus,
+html.tv input:focus,
+html.tv [tabindex]:focus {
+  outline-width: 8px;
+  outline-offset: 4px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

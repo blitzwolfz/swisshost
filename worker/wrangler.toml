@@ -1,0 +1,20 @@
+name = "swisshost-signaling"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Durable Object binding — one instance per room code.
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+# Durable Objects must be declared in a migration.
+[[migrations]]
+tag = "v1"
+new_classes = ["Room"]
+
+# Custom domain route for the signaling endpoint.
+# After adding swisshost.cc to Cloudflare, this maps the Worker to a subdomain.
+# (See README step 5.)
+# [[routes]]
+# pattern = "signal.swisshost.cc"
+# custom_domain = true
