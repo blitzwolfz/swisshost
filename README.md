@@ -98,9 +98,12 @@ You'll end up with:
    certificates are provisioned automatically once active.
 5. Recommended: **SSL/TLS → Overview → Full (strict)**.
 
-> Durable Objects require a **Workers Paid** plan ($5/mo) on most accounts. If
-> `wrangler deploy` complains about Durable Objects, enable Workers Paid in
-> **Workers & Pages → Plans**.
+> Durable Objects run fine on the **Workers Free** plan as long as they use
+> SQLite-backed storage — `worker/wrangler.toml` already declares this
+> (`new_sqlite_classes`), so no paid plan is required. If you ever see the deploy error
+> `In order to use Durable Objects with a free plan, you must create a namespace using a
+> 'new_sqlite_classes' migration`, it means the migration in `wrangler.toml` reverted to
+> the older `new_classes` form — switch it back to `new_sqlite_classes`.
 
 ### Step 2 — Deploy the signaling Worker + Durable Object
 
