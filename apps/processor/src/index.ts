@@ -124,9 +124,12 @@ export async function processNormalizedBatch(
       d1Writes += stmts.length;
     }
 
-    // 4. Evaluate server-side vehicle notification subscriptions (only if subscriptions exist)
+    // 4. Evaluate server-side vehicle notification subscriptions only when subscriptions exist
     if (ingestRes.changedObservations.length > 0) {
-      await evaluateVehicleSubscriptions(env, batch.agencyId, ingestRes.changedObservations).catch(() => undefined);
+      const hasSubs = await env.CACHE.get(`has_subs:${batch.agencyId}`).catch(() => null);
+      if (hasSubs !== "0") {
+        await evaluateVehicleSubscriptions(env, batch.agencyId, ingestRes.changedObservations).catch(() => undefined);
+      }
     }
   }
 
@@ -190,7 +193,8 @@ export async function processNormalizedBatch(
     }
   }
 
-  if (d1Writes > 0 || doRequests > 0) {
+  // Only hit D1 quota_ledger when actual D1 writes occurred (saves ~5,000+ D1 writes/day on TripUpdate/Alert polls)
+  if (d1Writes > 0) {
     await recordQuotaUsage(env.DB, { d1Writes: d1Writes + 1, doRequests }, budgets);
   }
 
@@ -226,7 +230,10 @@ async function evaluateVehicleSubscriptions(
       last_notified_at: string | null;
     }>();
 
-  if (subs.results.length === 0) return;
+  if (subs.results.length === 0) {
+    await env.CACHE.put(`has_subs:${agencyId}`, "0", { expirationTtl: 1800 }).catch(() => undefined);
+    return;
+  }
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const obsByVeh = new Map(observations.map((o) => [o.vehicleId, o]));

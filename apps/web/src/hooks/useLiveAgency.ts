@@ -190,8 +190,9 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
       connectWs();
     }
 
-    // Periodic polling fallback (30s) when WS is unavailable or in multi-agency overlay mode
+    // Periodic polling fallback (30s) — skips work while tab is hidden to save battery, bandwidth, and Worker requests
     pollTimer = setInterval(() => {
+      if (document.hidden) return;
       if (agencyId === "all" || !ws || ws.readyState !== WebSocket.OPEN) {
         void fetchSnapshot("polling");
       } else {
@@ -203,8 +204,30 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
       }
     }, 30_000);
 
+    const onVisibility = () => {
+      if (closed || document.hidden) return;
+      if (agencyId === "all" || !ws || ws.readyState !== WebSocket.OPEN) {
+        void fetchSnapshot("polling");
+      } else {
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "subscribe",
+              agencyId,
+              routeId: routeFilter || undefined,
+              cursor: cursorRef.current,
+            })
+          );
+        } catch {
+          // ignore
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       closed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (pollTimer) clearInterval(pollTimer);
       ws?.close();

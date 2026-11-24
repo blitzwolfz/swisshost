@@ -6,7 +6,7 @@ import {
   SubscriptionInputSchema,
   createProblemDetails,
 } from "@swisshost/contracts";
-import { ensureAgenciesSeeded, getQuotaStatus } from "@swisshost/database";
+import { ensureAgenciesSeeded, getQuotaStatus, parseObservationChunkRows } from "@swisshost/database";
 import {
   ANALYTICS_ALGORITHM_VERSION,
   backtestPredictions,
@@ -103,6 +103,34 @@ app.onError((err, c) => {
     createProblemDetails(500, "Internal Server Error", err.message, requestId, c.req.path),
     500
   );
+});
+
+// Edge-cache hot read-only endpoints via Cloudflare Cache API (zero extra D1/DO calls under traffic spikes)
+const EDGE_CACHE_PATHS = new Set(["/api/v1/agencies", "/api/v1/status"]);
+app.use("/api/v1/*", async (c, next) => {
+  const isCacheable =
+    c.req.method === "GET" &&
+    (EDGE_CACHE_PATHS.has(c.req.path) || /^\/api\/v1\/agencies\/[^/]+\/routes$/.test(c.req.path));
+  if (!isCacheable) return next();
+
+  const cache = (caches as unknown as { default?: Cache }).default;
+  if (!cache) return next();
+
+  const cacheKey = new Request(c.req.url, { method: "GET" });
+  const hit = await cache.match(cacheKey);
+  if (hit) {
+    const res = new Response(hit.body, hit);
+    res.headers.set("X-Swisshost-Cache", "HIT");
+    return res;
+  }
+
+  await next();
+
+  if (c.res.status === 200) {
+    const toStore = c.res.clone();
+    toStore.headers.set("Cache-Control", "public, max-age=20, s-maxage=20");
+    c.executionCtx.waitUntil(cache.put(cacheKey, toStore));
+  }
 });
 
 // Mount admin routes
@@ -560,7 +588,7 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle/history", async (c) => {
   }> = [];
 
   for (const ch of chunks.results) {
-    const rows = JSON.parse(ch.data_json) as Array<Record<string, unknown>>;
+    const rows = parseObservationChunkRows(ch.data_json);
     for (const r of rows) {
       if (r.v !== vehicleId && r.f !== vehicleId) continue;
       const ts = String(r.ts ?? r.rx);
@@ -572,8 +600,8 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle/history", async (c) => {
         lon: Number(r.lo),
         bearingDeg: r.hd !== null && r.hd !== undefined ? Number(r.hd) : null,
         speedMps: r.sp !== null && r.sp !== undefined ? Number(r.sp) : null,
-        routeId: (r.r as string | null) ?? null,
-        tripId: (r.t as string | null) ?? null,
+        routeId: r.r ?? null,
+        tripId: r.t ?? null,
         delaySec: r.sd !== null && r.sd !== undefined ? Number(r.sd) : null,
         timestampBasis: String(r.tb ?? "receipt"),
         gapFromPrevSec: null,
@@ -661,7 +689,7 @@ app.get("/api/v1/agencies/:id/history", async (c) => {
   }> = [];
 
   for (const ch of chunks.results) {
-    const rows = JSON.parse(ch.data_json) as Array<Record<string, unknown>>;
+    const rows = parseObservationChunkRows(ch.data_json);
     for (const r of rows) {
       if (routeId && r.r !== routeId) continue;
       if (vehicleId && r.v !== vehicleId && r.f !== vehicleId) continue;
@@ -671,8 +699,8 @@ app.get("/api/v1/agencies/:id/history", async (c) => {
         observedAt: ts,
         vehicleId: String(r.v),
         fleetNumber: String(r.f ?? r.v),
-        routeId: (r.r as string | null) ?? null,
-        tripId: (r.t as string | null) ?? null,
+        routeId: r.r ?? null,
+        tripId: r.t ?? null,
         lat: Number(r.la),
         lon: Number(r.lo),
         speedMps: r.sp !== null && r.sp !== undefined ? Number(r.sp) : null,
@@ -1451,10 +1479,10 @@ app.post("/api/v1/exports", async (c) => {
 
   const rows: Array<Record<string, unknown>> = [];
   for (const ch of chunks.results) {
-    for (const r of JSON.parse(ch.data_json) as Array<Record<string, unknown>>) {
+    for (const r of parseObservationChunkRows(ch.data_json)) {
       if (req.routeId && r.r !== req.routeId) continue;
       if (req.vehicleId && r.v !== req.vehicleId && r.f !== req.vehicleId) continue;
-      rows.push(r);
+      rows.push(r as unknown as Record<string, unknown>);
       if (rows.length >= 10_000) break;
     }
     if (rows.length >= 10_000) break;
@@ -1728,6 +1756,7 @@ app.post("/api/v1/me/subscriptions", async (c) => {
       new Date().toISOString()
     )
     .run();
+  await c.env.CACHE.delete(`has_subs:${s.agencyId}`).catch(() => undefined);
   return c.json({ ok: true, id }, 201);
 });
 

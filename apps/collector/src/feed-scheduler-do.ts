@@ -355,16 +355,27 @@ export class FeedSchedulerDO extends DurableObject<Env> {
       return;
     }
 
-    await this.pollNow(false);
+    const res = await this.pollNow(false);
 
-    // Bounded exponential backoff on repeated failures, plus 85% quota slowdown
-    const quota = await getQuotaStatus(this.env.DB, getBudgets(this.env)).catch(() => null);
-    const quotaFactor = quota?.tier === "throttle_85" ? 2 : quota?.tier === "paused_95" ? 5 : 1;
-    const backoffFactor = Math.min(8, 2 ** Math.min(3, this.consecutiveErrors));
-    const intervalMs = Math.max(
-      15_000,
-      Math.min(900_000, this.config.refreshSeconds * 1000 * backoffFactor * quotaFactor)
-    );
+    // Smart adaptive scheduling to minimize DO/Worker/D1 usage on Free plan:
+    // - missing_key (e.g. GO Transit awaiting API key): sleep 30 min
+    // - 0 entities returned (e.g. Guelph Transit overnight): slow 3x (max 180s), snaps back immediately when service resumes
+    // - Repeated errors: bounded exponential backoff
+    // - Quota >= 85%: 2x slowdown; >= 95%: 5x pause
+    let intervalMs: number;
+    if (res.status === "missing_key") {
+      intervalMs = 30 * 60_000;
+    } else {
+      const quota = await getQuotaStatus(this.env.DB, getBudgets(this.env)).catch(() => null);
+      const quotaFactor = quota?.tier === "throttle_85" ? 2 : quota?.tier === "paused_95" ? 5 : 1;
+      const backoffFactor = Math.min(8, 2 ** Math.min(3, this.consecutiveErrors));
+      const idleFactor = res.ok && (res.entities ?? 0) === 0 ? 3 : 1;
+      intervalMs = Math.max(
+        15_000,
+        Math.min(900_000, this.config.refreshSeconds * 1000 * backoffFactor * quotaFactor * idleFactor)
+      );
+    }
+
     const next = Date.now() + intervalMs + this.deterministicJitterMs(this.config.id);
     this.nextDueMs = next;
     this.putState("nextDueMs", String(next));

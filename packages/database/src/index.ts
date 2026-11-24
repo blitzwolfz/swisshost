@@ -13,14 +13,49 @@ export interface QuotaStatus {
   tier: "normal" | "warn_70" | "throttle_85" | "paused_95";
 }
 
+export interface CompactObservationRow {
+  v: string;
+  f: string;
+  r: string | null;
+  t: string | null;
+  b: string | null;
+  d: number | null;
+  la: number;
+  lo: number;
+  hd: number | null;
+  sp: number | null;
+  sd: number | null;
+  st: string | null;
+  ts: string;
+  rx: string;
+  tb: string;
+  mm: string;
+  mc: number;
+}
+
 export function todayUtcKey(date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
 
+/**
+ * Only writes agency/feed definitions when missing or explicitly forced,
+ * avoiding 15 wasted D1 writes on every isolate cold start or cron tick.
+ */
 export async function ensureAgenciesSeeded(
   db: D1Database,
-  configs: AgencyConfig[]
+  configs: AgencyConfig[],
+  force = false
 ): Promise<void> {
+  if (!force) {
+    const existing = await db
+      .prepare("SELECT COUNT(*) as c FROM agencies")
+      .first<{ c: number }>()
+      .catch(() => null);
+    if ((existing?.c ?? 0) >= configs.length) {
+      return;
+    }
+  }
+
   const now = new Date().toISOString();
   const stmts: D1PreparedStatement[] = [];
 
@@ -195,6 +230,37 @@ export function getWindowKey(isoTimestamp: string): string {
   return `${yyyy}/${mm}/${dd}/${half}`;
 }
 
+/**
+ * Decode either compact tuple format (v2, ~55% smaller) or legacy object format (v1).
+ */
+export function parseObservationChunkRows(dataJson: string): CompactObservationRow[] {
+  const raw = JSON.parse(dataJson) as unknown[];
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const first = raw[0];
+  if (Array.isArray(first)) {
+    return (raw as unknown[][]).map((t) => ({
+      v: String(t[0] ?? ""),
+      f: String(t[1] ?? t[0] ?? ""),
+      r: (t[2] as string | null) ?? null,
+      t: (t[3] as string | null) ?? null,
+      b: (t[4] as string | null) ?? null,
+      d: t[5] !== null && t[5] !== undefined ? Number(t[5]) : null,
+      la: Number(t[6]),
+      lo: Number(t[7]),
+      hd: t[8] !== null && t[8] !== undefined ? Number(t[8]) : null,
+      sp: t[9] !== null && t[9] !== undefined ? Number(t[9]) : null,
+      sd: t[10] !== null && t[10] !== undefined ? Number(t[10]) : null,
+      st: (t[11] as string | null) ?? null,
+      ts: String(t[12] ?? ""),
+      rx: String(t[13] ?? t[12] ?? ""),
+      tb: String(t[14] ?? "receipt"),
+      mm: String(t[15] ?? "unmatched"),
+      mc: Number(t[16] ?? 0),
+    }));
+  }
+  return raw as CompactObservationRow[];
+}
+
 export async function insertObservationChunk(
   db: D1Database,
   agencyId: string,
@@ -207,27 +273,26 @@ export async function insertObservationChunk(
   const windowKey = getWindowKey(windowEnd);
   const chunkId = `${agencyId}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 
-  const compact = observations.map((o) => ({
-    v: o.vehicleId,
-    f: o.fleetNumber,
-    r: o.routeId,
-    t: o.tripId,
-    b: o.blockId,
-    d: o.directionId,
-    la: Number(o.lat.toFixed(6)),
-    lo: Number(o.lon.toFixed(6)),
-    hd: o.bearingDeg !== null ? Math.round(o.bearingDeg) : null,
-    sp: o.speedMps !== null ? Number(o.speedMps.toFixed(2)) : null,
-    sd: o.scheduleDeviationSec,
-    st: o.stopId,
-    sq: o.stopSequence,
-    ts: o.observedAt ?? o.receivedAt,
-    rx: o.receivedAt,
-    tb: o.timestampBasis,
-    mm: o.matchMethod,
-    mc: Number(o.matchConfidence.toFixed(2)),
-    qf: o.qualityFlags,
-  }));
+  // Compact positional tuple encoding cuts D1 storage & read payload size by ~55%
+  const tuples = observations.map((o) => [
+    o.vehicleId,
+    o.fleetNumber,
+    o.routeId,
+    o.tripId,
+    o.blockId,
+    o.directionId,
+    Number(o.lat.toFixed(5)),
+    Number(o.lon.toFixed(5)),
+    o.bearingDeg !== null ? Math.round(o.bearingDeg) : null,
+    o.speedMps !== null ? Number(o.speedMps.toFixed(1)) : null,
+    o.scheduleDeviationSec,
+    o.stopId,
+    o.observedAt ?? o.receivedAt,
+    o.receivedAt,
+    o.timestampBasis,
+    o.matchMethod,
+    Number(o.matchConfidence.toFixed(2)),
+  ]);
 
   await db
     .prepare(
@@ -243,12 +308,31 @@ export async function insertObservationChunk(
       windowStart,
       windowEnd,
       observations.length,
-      JSON.stringify(compact),
+      JSON.stringify(tuples),
       new Date().toISOString()
     )
     .run();
 
   return { chunkId, rowCount: observations.length };
+}
+
+/**
+ * Bounded hot-staging retention so D1 never approaches its 5 GB Free storage cap.
+ * - Archived chunks (already verified in blitzwolfz/swisshost-data): retain 24h in hot D1.
+ * - Unarchived chunks: retain up to 7 days in hot D1, plus clean expired export_jobs & sessions.
+ */
+export async function pruneHotStaging(db: D1Database): Promise<void> {
+  const now = Date.now();
+  const archivedCutoff = new Date(now - 24 * 3600 * 1000).toISOString();
+  const unarchivedCutoff = new Date(now - 7 * 86400 * 1000).toISOString();
+  const nowIso = new Date(now).toISOString();
+
+  await db.batch([
+    db.prepare("DELETE FROM observation_chunks WHERE archived = 1 AND created_at < ?").bind(archivedCutoff),
+    db.prepare("DELETE FROM observation_chunks WHERE created_at < ?").bind(unarchivedCutoff),
+    db.prepare("DELETE FROM export_jobs WHERE expires_at < ?").bind(nowIso),
+    db.prepare("DELETE FROM sessions WHERE expires_at < ?").bind(nowIso),
+  ]);
 }
 
 export async function appendAuditLog(

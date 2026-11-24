@@ -335,7 +335,7 @@ export function createAdminApp() {
       }
     }
 
-    await ensureAgenciesSeeded(c.env.DB, [parsed.data]);
+    await ensureAgenciesSeeded(c.env.DB, [parsed.data], true);
     await appendAuditLog(c.env.DB, c.get("actor"), "agency.onboard", parsed.data.id, {
       feeds: parsed.data.feeds.map((f) => f.id),
     });

@@ -1,7 +1,7 @@
 import { gzipSync } from "fflate";
 import { parseGtfsStaticZip, validateFeedUrl } from "@swisshost/adapters";
 import { computeScheduleAdherence, ANALYTICS_ALGORITHM_VERSION } from "@swisshost/analytics";
-import { ensureAgenciesSeeded, getQuotaStatus } from "@swisshost/database";
+import { ensureAgenciesSeeded, getQuotaStatus, parseObservationChunkRows, pruneHotStaging } from "@swisshost/database";
 import type { FeedKind } from "@swisshost/contracts";
 import type { Env } from "../../api/src/env";
 import { BUILTIN_AGENCIES, getBudgets, sha256Hex } from "../../api/src/env";
@@ -63,6 +63,7 @@ export async function runWatchdog(env: Env): Promise<{
   }
 
   await rollupRecentAnalytics(env).catch(() => undefined);
+  await pruneHotStaging(env.DB).catch(() => undefined);
 
   return { feedsChecked: feeds.results.length, repaired, quotaTier: quota.tier };
 }
@@ -223,7 +224,7 @@ export async function runTwelveHourArchive(
       let rowCount = 0;
 
       for (const ch of chunks.results) {
-        const rows = JSON.parse(ch.data_json) as Array<Record<string, unknown>>;
+        const rows = parseObservationChunkRows(ch.data_json);
         for (const r of rows) {
           csvLines.push(
             [
