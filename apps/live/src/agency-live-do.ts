@@ -7,8 +7,10 @@ import type {
   NormalizedTripUpdate,
   Observation,
 } from "@swisshost/contracts";
+import { loadLatestLiveVehiclesFromTurso } from "@swisshost/database";
 import { validateObservationQuality } from "@swisshost/transit-core";
 import type { Env } from "../../api/src/env";
+import { withActiveDb } from "../../api/src/env";
 
 interface StoredVehicleEntry {
   observedMs: number;
@@ -28,8 +30,8 @@ interface WsAttachment {
 
 /**
  * AgencyLiveDO keeps real-time fleet state, trip updates, and recent delta frames
- * purely in Durable Object RAM — zero DO SQLite rows written per poll — so high-frequency
- * agencies like TTC (~1,000 vehicles/min) stay at 0% of Cloudflare's free DO SQLite write quota.
+ * in Durable Object RAM and rehydrates from Turso (`observation_chunks`) after
+ * Cloudflare DO hibernation. Zero Cloudflare DO SQLite storage writes are ever used.
  */
 export class AgencyLiveDO extends DurableObject<Env> {
   private agencyId = "";
@@ -37,7 +39,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
   private feedStatus: FeedHealthStatus = "unknown";
   private lastSuccessAt: string | null = null;
   private staleAfterSeconds = 120;
-  private lastPersistedMs = 0;
+  private lastTursoHydrateMs = 0;
 
   private vehicles = new Map<string, StoredVehicleEntry>();
   private knownVehicleIds = new Set<string>();
@@ -45,67 +47,51 @@ export class AgencyLiveDO extends DurableObject<Env> {
   private deltaLog: Array<{ cursor: number; payloadJson: string }> = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    // Rehydrate the latest compact snapshot row after Cloudflare DO hibernation (1 row read)
-    ctx.blockConcurrencyWhile(async () => {
-      try {
-        const rows = this.ctx.storage.sql
-          .exec<{ value: string }>("SELECT value FROM live_snapshot WHERE key = 'latest'")
-          .toArray();
-        if (!rows[0]?.value) return;
-        const parsed = JSON.parse(rows[0].value) as {
-          agencyId?: string;
-          cursor?: number;
-          feedStatus?: FeedHealthStatus;
-          lastSuccessAt?: string | null;
-          staleAfterSeconds?: number;
-          vehicles?: Array<[string, StoredVehicleEntry]>;
-        };
-        if (parsed.agencyId) this.agencyId = parsed.agencyId;
-        if (typeof parsed.cursor === "number") this.cursor = parsed.cursor;
-        if (parsed.feedStatus) this.feedStatus = parsed.feedStatus;
-        if (parsed.lastSuccessAt !== undefined) this.lastSuccessAt = parsed.lastSuccessAt;
-        if (typeof parsed.staleAfterSeconds === "number") this.staleAfterSeconds = parsed.staleAfterSeconds;
-        if (Array.isArray(parsed.vehicles)) {
-          const cutoffMs = Date.now() - 15 * 60_000;
-          for (const [id, entry] of parsed.vehicles) {
-            if (entry && entry.receivedMs >= cutoffMs) {
-              this.vehicles.set(id, entry);
-              this.knownVehicleIds.add(entry.state.vehicleId);
-            }
-          }
-        }
-      } catch {
-        // Table not yet created on a brand-new DO; will be initialized on first ingest
-      }
-    });
+    super(ctx, withActiveDb(env));
+    if (ctx.id.name) {
+      this.agencyId = ctx.id.name;
+    }
   }
 
-  /** Persist the whole live map as 1 single SQLite row (max once per 45s) so hibernation never loses data. */
-  private persistSnapshotBestEffort(nowMs: number): void {
-    if (nowMs - this.lastPersistedMs < 45_000) return;
-    this.lastPersistedMs = nowMs;
+  /**
+   * Rehydrate live vehicles from Turso (`observation_chunks`) after DO hibernation or cold start.
+   * Uses zero Cloudflare DO SQLite reads/writes and works identically for every agency.
+   */
+  private async ensureHydratedFromTurso(agencyHint?: string): Promise<void> {
+    const agId = agencyHint || this.agencyId || this.ctx.id.name || "";
+    if (!agId) return;
+    if (!this.agencyId) this.agencyId = agId;
+
+    if (this.vehicles.size > 0) return;
+    const nowMs = Date.now();
+    if (nowMs - this.lastTursoHydrateMs < 20_000) return;
+    this.lastTursoHydrateMs = nowMs;
+
     try {
-      this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS live_snapshot (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        );
-      `);
-      const payload = JSON.stringify({
-        agencyId: this.agencyId,
-        cursor: this.cursor,
-        feedStatus: this.feedStatus,
-        lastSuccessAt: this.lastSuccessAt,
-        staleAfterSeconds: this.staleAfterSeconds,
-        vehicles: Array.from(this.vehicles.entries()),
-      });
-      this.ctx.storage.sql.exec(
-        "INSERT INTO live_snapshot (key, value) VALUES ('latest', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        payload
-      );
+      const loaded = await loadLatestLiveVehiclesFromTurso(this.env.DB, agId, 15, this.staleAfterSeconds);
+      this.staleAfterSeconds = loaded.staleAfterSeconds;
+      if (loaded.lastSuccessAt && !this.lastSuccessAt) {
+        this.lastSuccessAt = loaded.lastSuccessAt;
+      }
+      if (loaded.vehicles.length > 0) {
+        for (const v of loaded.vehicles) {
+          const obsMs = v.observedAt ? Date.parse(v.observedAt) : Date.parse(v.receivedAt);
+          const rxMs = Date.parse(v.receivedAt);
+          this.vehicles.set(v.sourceVehicleId, {
+            observedMs: Number.isFinite(obsMs) ? obsMs : nowMs,
+            receivedMs: Number.isFinite(rxMs) ? rxMs : nowMs,
+            state: v,
+          });
+          this.knownVehicleIds.add(v.vehicleId);
+        }
+        if (this.cursor === 0) this.cursor = 1;
+        if (this.feedStatus === "unknown") {
+          const anyFresh = loaded.vehicles.some((v) => v.freshness !== "stale");
+          this.feedStatus = anyFresh ? "fresh" : "stale";
+        }
+      }
     } catch {
-      // Non-fatal: RAM remains authoritative while awake
+      // Non-fatal: next poll will populate RAM directly
     }
   }
 
@@ -298,7 +284,6 @@ export class AgencyLiveDO extends DurableObject<Env> {
     }
 
     this.broadcastDelta(deltaMsg, encodedDelta);
-    this.persistSnapshotBestEffort(nowMs);
 
     return {
       cursor: this.cursor,
@@ -350,6 +335,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
   }
 
   async getVehicle(vehicleId: string): Promise<LiveVehicleState | null> {
+    await this.ensureHydratedFromTurso();
     const nowMs = Date.now();
     const direct = this.vehicles.get(vehicleId);
     if (direct) return this.hydrateVehicle(direct.state, nowMs);
@@ -362,6 +348,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
   }
 
   async getVehicleByTrip(tripId: string): Promise<LiveVehicleState | null> {
+    await this.ensureHydratedFromTurso();
     const nowMs = Date.now();
     for (const entry of this.vehicles.values()) {
       if (entry.state.tripId === tripId) {
@@ -371,12 +358,13 @@ export class AgencyLiveDO extends DurableObject<Env> {
     return null;
   }
 
-  async getStats(): Promise<{
+  async getStats(agencyHint?: string): Promise<{
     activeCount: number;
     routeCounts: Record<string, number>;
     feedStatus: FeedHealthStatus;
     lastSuccessAt: string | null;
   }> {
+    await this.ensureHydratedFromTurso(agencyHint);
     let activeCount = 0;
     const routeCounts: Record<string, number> = {};
     for (const entry of this.vehicles.values()) {
@@ -437,6 +425,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
     if (filters?.agencyId && !this.agencyId) {
       this.agencyId = filters.agencyId;
     }
+    await this.ensureHydratedFromTurso(filters?.agencyId);
     const nowMs = Date.now();
     let vehicles: LiveVehicleState[] = [];
     for (const entry of this.vehicles.values()) {

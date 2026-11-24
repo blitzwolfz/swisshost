@@ -189,11 +189,17 @@ export default function LiveMapPage() {
       if (modeFilter === "bus" && v.vehicleMode && v.vehicleMode !== "bus") return false;
       return true;
     });
-    // Put trains first, then live in-service buses/streetcars, then unassigned, then stale
+    // Put live GPS vehicles first, then timetable-estimated trains, then unassigned, then stale
     return [...list].sort((a, b) => {
       const rank = (v: LiveVehicle) =>
-        (v.freshness === "stale" ? 4 : 0) +
-        (isTrainMode(v.vehicleMode) ? 0 : v.routeId || v.tripId ? 1 : 2);
+        (v.freshness === "stale" ? 8 : 0) +
+        (v.positionSource === "scheduled"
+          ? 2
+          : isTrainMode(v.vehicleMode)
+            ? 0
+            : v.routeId || v.tripId
+              ? 1
+              : 3);
       const rDiff = rank(a) - rank(b);
       if (rDiff !== 0) return rDiff;
       const routeCmp = (a.routeShortName ?? a.routeId ?? "zzz").localeCompare(

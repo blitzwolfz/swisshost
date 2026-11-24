@@ -11,15 +11,24 @@ import {
   computeScheduleAdherence,
   predictStopArrival,
 } from "@swisshost/analytics";
-import { createTursoD1Adapter, splitSqlStatements } from "@swisshost/database";
 import {
+  createTursoD1Adapter,
+  loadFeedConfigFromTurso,
+  loadLatestLiveVehiclesFromTurso,
+  splitSqlStatements,
+} from "@swisshost/database";
+import {
+  buildCorridorDepartureSchedule,
+  computeTrapezoidalKinematics,
   computeUpcomingBusesForLeg,
   detectStopEvent,
   evaluateTripMatch,
   findRailPlanCandidates,
   findWeatherForTripWindow,
   generateScheduledRailVehicles,
+  getCorridorHeadwayMinutes,
   getLocalServiceContext,
+  getRailCorridor,
   getScheduledRailRideTimeline,
   inferVehicleMode,
   isServiceActiveOnDate,
@@ -507,6 +516,129 @@ describe("Rail Networks — TTC Subway & GO Transit Trains", () => {
     expect(kitchener).toBeDefined();
     expect(kitchener!.headsign).toBe("Union Station");
     expect(kitchener!.upcomingDepartures.length).toBeGreaterThan(0);
+  });
+
+  it("solves trapezoidal train kinematics smoothly (accelerate -> cruise -> brake) and integrates Sunday/rush headways", () => {
+    const line1 = getRailCorridor("ttc", "1")!;
+    expect(line1).not.toBeNull();
+
+    // Weekday rush ATC headway vs midday vs Sunday
+    expect(getCorridorHeadwayMinutes(line1, 8 * 60, "weekday")).toBe(2.5);
+    expect(getCorridorHeadwayMinutes(line1, 12 * 60, "weekday")).toBe(4.0);
+    expect(getCorridorHeadwayMinutes(line1, 12 * 60, "sunday")).toBe(4.5);
+
+    // Continuous schedule: Monday opens at 06:00 (360 min); Sunday opens at 08:00 (480 min)
+    const monDeps = buildCorridorDepartureSchedule(line1, "2026-11-23", 0);
+    const sunDeps = buildCorridorDepartureSchedule(line1, "2026-11-29", 0);
+    expect(monDeps[0]).toBe(360);
+    expect(sunDeps[0]).toBe(480);
+    for (let i = 1; i < monDeps.length; i++) {
+      expect(monDeps[i]!).toBeGreaterThan(monDeps[i - 1]!);
+    }
+
+    // Sunday 07:15 EST should emit zero TTC subway trains (opens 08:00 Sunday)
+    const sunEarlyMs = Date.parse("2026-11-29T12:15:00.000Z"); // 07:15 EST
+    expect(generateScheduledRailVehicles("ttc", sunEarlyMs)).toHaveLength(0);
+
+    // Trapezoidal kinematics: 1200m track over 95s moving window
+    const startKin = computeTrapezoidalKinematics({
+      trackDistanceMeters: 1200,
+      moveDurationSec: 95,
+      elapsedMoveSec: 0,
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2,
+    });
+    const midKin = computeTrapezoidalKinematics({
+      trackDistanceMeters: 1200,
+      moveDurationSec: 95,
+      elapsedMoveSec: 47.5,
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2,
+    });
+    const brakeKin = computeTrapezoidalKinematics({
+      trackDistanceMeters: 1200,
+      moveDurationSec: 95,
+      elapsedMoveSec: 88,
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2,
+    });
+    const endKin = computeTrapezoidalKinematics({
+      trackDistanceMeters: 1200,
+      moveDurationSec: 95,
+      elapsedMoveSec: 95,
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2,
+    });
+
+    expect(startKin.fraction).toBe(0);
+    expect(startKin.speedMps).toBe(0);
+    expect(midKin.phase).toBe("cruising");
+    expect(midKin.speedMps).toBeGreaterThan(10);
+    expect(midKin.speedMps).toBeLessThanOrEqual(22.2);
+    expect(brakeKin.phase).toBe("braking");
+    expect(brakeKin.speedMps).toBeLessThan(midKin.speedMps);
+    expect(endKin.fraction).toBe(1);
+    expect(endKin.speedMps).toBe(0);
+  });
+
+  it("rehydrates live vehicles and feed config from Turso observation_chunks without DO SQLite", async () => {
+    const nowIso = new Date().toISOString();
+    const tupleChunk = JSON.stringify([
+      ["4401", "4401", "504", "T504-1", null, 0, 43.648, -79.381, 90, 8.2, 30, "S1", nowIso, nowIso, "vehicle", "explicit_trip", 0.95],
+    ]);
+
+    const fakeDb = {
+      prepare(sql: string) {
+        return {
+          bind(..._args: unknown[]) {
+            return {
+              async all() {
+                if (sql.includes("observation_chunks")) {
+                  return { results: [{ data_json: tupleChunk, window_end: nowIso, created_at: nowIso }] };
+                }
+                return { results: [] };
+              },
+              async first() {
+                if (sql.includes("JOIN agencies")) {
+                  return {
+                    id: "ttc-positions",
+                    agency_id: "ttc",
+                    kind: "vehicle_positions",
+                    adapter: "gtfs-rt",
+                    url: "https://bustime.ttc.ca/gtfsrt/vehicles",
+                    fallback_url: null,
+                    auth_query_param: null,
+                    auth_secret_ref: null,
+                    refresh_seconds: 60,
+                    stale_after_seconds: 120,
+                    enabled: 1,
+                    timezone: "America/Toronto",
+                    archive_policy: "permitted",
+                    agency_enabled: 1,
+                  };
+                }
+                return { stale_after_seconds: 120, last_success_at: nowIso };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    const live = await loadLatestLiveVehiclesFromTurso(fakeDb, "ttc", 15);
+    expect(live.vehicles).toHaveLength(1);
+    expect(live.vehicles[0]!.fleetNumber).toBe("4401");
+    expect(live.vehicles[0]!.routeId).toBe("504");
+    expect(live.vehicles[0]!.freshness).toBe("fresh");
+
+    const cfg = await loadFeedConfigFromTurso(fakeDb, "ttc-positions");
+    expect(cfg).not.toBeNull();
+    expect(cfg!.agencyId).toBe("ttc");
+    expect(cfg!.enabled).toBe(true);
   });
 });
 

@@ -347,16 +347,24 @@ export function validateObservationQuality(
 
 export {
   RAIL_CORRIDORS,
+  buildCorridorDepartureSchedule,
+  computeTrapezoidalKinematics,
   findRailPlanCandidates,
   generateScheduledRailVehicles,
+  getCorridorHeadwayMinutes,
   getRailCorridor,
   getRailCorridorsForAgency,
   getScheduledRailRideTimeline,
+  getServiceDayType,
   inferVehicleMode,
   isRailMode,
   type RailCorridor,
   type RailCorridorGeo,
+  type RailHeadwaySchedule,
+  type RailKinematicsSpec,
   type RailStation,
+  type ServiceDayType,
+  type TrapezoidalKinematicsResult,
 } from "./rail-networks";
 
 export {

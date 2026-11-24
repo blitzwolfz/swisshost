@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { FeedKind } from "@swisshost/contracts";
 import { decodeGtfsRtFeed, decodeUmoXmlVehicles, validateFeedUrl } from "@swisshost/adapters";
-import { getQuotaStatus } from "@swisshost/database";
+import { getQuotaStatus, loadFeedConfigFromTurso } from "@swisshost/database";
 import { processNormalizedBatch } from "../../processor/src/index";
 import type { Env } from "../../api/src/env";
 import { getBudgets, withActiveDb } from "../../api/src/env";
@@ -37,36 +37,23 @@ export class FeedSchedulerDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, withActiveDb(env));
-    // Read-only hydration from any previously persisted config (0 SQLite writes on wake)
-    ctx.blockConcurrencyWhile(async () => {
-      try {
-        const rows = this.ctx.storage.sql
-          .exec<{ key: string; value: string }>("SELECT key, value FROM scheduler_state WHERE key = 'config'")
-          .toArray();
-        if (rows[0]) {
-          this.config = JSON.parse(rows[0].value) as SchedulerFeedConfig;
-        }
-      } catch {
-        // Table not yet initialized or cold DO; config will be supplied by ensureScheduled / watchdog cron
-      }
-    });
   }
 
-  private persistConfigBestEffort(cfg: SchedulerFeedConfig): void {
+  /**
+   * Restore feed configuration from Turso (`feeds` + `agencies`) after DO hibernation.
+   * Uses zero Cloudflare DO SQLite storage reads or writes.
+   */
+  private async ensureConfigLoaded(): Promise<SchedulerFeedConfig | null> {
+    if (this.config) return this.config;
+    const feedId = this.ctx.id.name;
+    if (!feedId) return null;
     try {
-      this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS scheduler_state (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        );
-      `);
-      this.ctx.storage.sql.exec(
-        "INSERT INTO scheduler_state (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        JSON.stringify(cfg)
-      );
+      const loaded = await loadFeedConfigFromTurso(this.env.DB, feedId);
+      if (loaded) this.config = loaded;
     } catch {
-      // Non-fatal: config stays in DO memory and is refreshed by the */15 watchdog cron
+      // Non-fatal: watchdog cron or next ensureScheduled call will supply config
     }
+    return this.config;
   }
 
   private deterministicJitterMs(feedId: string): number {
@@ -78,11 +65,7 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   }
 
   async ensureScheduled(cfg: SchedulerFeedConfig): Promise<{ scheduled: boolean; nextDueMs: number }> {
-    const changed = !this.config || JSON.stringify(this.config) !== JSON.stringify(cfg);
     this.config = cfg;
-    if (changed) {
-      this.persistConfigBestEffort(cfg);
-    }
 
     if (!cfg.enabled || cfg.kind === "gtfs_static") {
       try {
@@ -138,17 +121,17 @@ export class FeedSchedulerDO extends DurableObject<Env> {
     latencyMs: number;
   }> {
     const startMs = Date.now();
-    if (!this.config) {
+    const cfg = await this.ensureConfigLoaded();
+    if (!cfg) {
       return { ok: false, status: "unconfigured", error: "FeedSchedulerDO not configured", latencyMs: 0 };
     }
     if (this.inFlight) {
       return { ok: false, status: "skipped_overlap", latencyMs: 0 };
     }
-    if (!this.config.enabled && !force) {
+    if (!cfg.enabled && !force) {
       return { ok: false, status: "disabled", latencyMs: 0 };
     }
 
-    const cfg = this.config;
     this.inFlight = true;
     const nowIso = new Date(startMs).toISOString();
 
@@ -340,7 +323,8 @@ export class FeedSchedulerDO extends DurableObject<Env> {
       this.lastAlarmLatenessMs = Math.max(0, now - this.nextDueMs);
     }
 
-    if (!this.config || !this.config.enabled || this.config.kind === "gtfs_static") {
+    const cfg = await this.ensureConfigLoaded();
+    if (!cfg || !cfg.enabled || cfg.kind === "gtfs_static") {
       return;
     }
 
@@ -361,11 +345,11 @@ export class FeedSchedulerDO extends DurableObject<Env> {
       const idleFactor = res.ok && (res.entities ?? 0) === 0 ? 3 : 1;
       intervalMs = Math.max(
         15_000,
-        Math.min(900_000, this.config.refreshSeconds * 1000 * backoffFactor * quotaFactor * idleFactor)
+        Math.min(900_000, cfg.refreshSeconds * 1000 * backoffFactor * quotaFactor * idleFactor)
       );
     }
 
-    const next = Date.now() + intervalMs + this.deterministicJitterMs(this.config.id);
+    const next = Date.now() + intervalMs + this.deterministicJitterMs(cfg.id);
     this.nextDueMs = next;
     try {
       await this.ctx.storage.setAlarm(next);

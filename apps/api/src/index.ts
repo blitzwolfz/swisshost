@@ -5,7 +5,12 @@ import {
   SubscriptionInputSchema,
   createProblemDetails,
 } from "@swisshost/contracts";
-import { ensureAgenciesSeeded, getQuotaStatus, parseObservationChunkRows } from "@swisshost/database";
+import {
+  ensureAgenciesSeeded,
+  getQuotaStatus,
+  loadLatestLiveVehiclesFromTurso,
+  parseObservationChunkRows,
+} from "@swisshost/database";
 import {
   ANALYTICS_ALGORITHM_VERSION,
   backtestPredictions,
@@ -242,10 +247,16 @@ app.get("/api/v1/status", async (c) => {
     getQuotaStatus(c.env.DB, getBudgets(c.env)),
   ]);
 
+  const usingTurso = Boolean(c.env.TURSO_DATABASE_URL && c.env.TURSO_AUTH_TOKEN);
+
   c.header("Cache-Control", "public, max-age=15");
   return c.json({
     platformStatus: quota.tier === "paused_95" ? "degraded_quota" : "operational",
     serverTime: new Date().toISOString(),
+    database: {
+      provider: usingTurso ? "turso" : "cloudflare_d1",
+      doSqliteStorage: "disabled",
+    },
     quota: {
       tier: quota.tier,
       maxRatio: Number(quota.maxRatio.toFixed(3)),
@@ -272,7 +283,7 @@ app.get("/api/v1/agencies", async (c) => {
   const statsList = await Promise.all(
     agencies.results.map(async (a) => {
       const id = String(a.id);
-      const stats = await c.env.AGENCY_LIVE.getByName(id).getStats().catch(() => null);
+      const stats = await c.env.AGENCY_LIVE.getByName(id).getStats(id).catch(() => null);
       return [id, stats] as const;
     })
   );
@@ -509,47 +520,13 @@ app.get("/api/v1/agencies/:id/vehicles", async (c) => {
     }
   }
 
-  // Fall back to D1 vehicle_latest if DO cold-started with 0 rows
+  // Fall back to Turso observation_chunks if DO cold-started with 0 rows (same pattern for all agencies)
   let vehicles = snap.vehicles;
   if (vehicles.length === 0) {
-    const rows = await c.env.DB.prepare(
-      `SELECT * FROM vehicle_latest WHERE agency_id = ? ORDER BY updated_at DESC LIMIT 1500`
-    )
-      .bind(agencyId)
-      .all<Record<string, unknown>>();
-    const nowMs = Date.now();
-    vehicles = rows.results.map((r) => {
-      const refMs = Date.parse(String(r.observed_at ?? r.received_at));
-      const ageSeconds = Math.max(0, Math.round((nowMs - refMs) / 1000));
-      return {
-        agencyId: String(r.agency_id),
-        sourceVehicleId: String(r.source_vehicle_id),
-        vehicleId: String(r.vehicle_id),
-        fleetNumber: String(r.fleet_number),
-        label: (r.fleet_number as string | null) ?? null,
-        routeId: (r.route_id as string | null) ?? null,
-        tripId: (r.trip_id as string | null) ?? null,
-        blockId: (r.block_id as string | null) ?? null,
-        directionId: r.direction_id !== null ? Number(r.direction_id) : null,
-        lat: Number(r.lat),
-        lon: Number(r.lon),
-        bearingDeg: r.bearing_deg !== null ? Number(r.bearing_deg) : null,
-        speedMps: r.speed_mps !== null ? Number(r.speed_mps) : null,
-        scheduleDeviationSec: r.schedule_deviation_sec !== null ? Number(r.schedule_deviation_sec) : null,
-        currentStatus: (r.current_status as string | null) ?? null,
-        stopId: (r.stop_id as string | null) ?? null,
-        stopSequence: r.stop_sequence !== null ? Number(r.stop_sequence) : null,
-        occupancyStatus: (r.occupancy_status as string | null) ?? null,
-        observedAt: (r.observed_at as string | null) ?? null,
-        receivedAt: String(r.received_at),
-        timestampBasis: (r.timestamp_basis as "vehicle" | "feed" | "receipt") ?? "receipt",
-        ageSeconds,
-        freshness: ageSeconds > 120 ? "stale" : ageSeconds > 75 ? "delayed" : "fresh",
-        qualityFlags: JSON.parse(String(r.quality_flags_json || "[]")),
-        matchMethod: String(r.match_method || "unmatched"),
-        matchConfidence: Number(r.match_confidence || 0),
-      };
-    });
+    const tursoFallback = await loadLatestLiveVehiclesFromTurso(c.env.DB, agencyId, 15).catch(() => null);
+    if (tursoFallback && tursoFallback.vehicles.length > 0) {
+      vehicles = tursoFallback.vehicles;
+    }
   }
 
   // Enrich with active route names/colors/types, trip headsigns, mode, and resolved stop names from KV/D1

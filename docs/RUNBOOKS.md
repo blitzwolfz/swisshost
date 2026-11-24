@@ -1,5 +1,14 @@
 # Swisshost Operations Runbooks
 
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the Turso-first storage model, multi-agency pipeline, and TTC subway kinematic math.
+
+## 0. Verifying Turso Database Mode (No Cloudflare DO SQLite / D1 Writes)
+1. Ensure both `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` Worker secrets are set (`npx wrangler secret list`).
+2. Check `GET /api/v1/status`:
+   - `database.provider` should be `"turso"`
+   - `database.doSqliteStorage` should be `"disabled"`
+3. If `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN` is rotated, update both via `npx wrangler secret put` and redeploy. Both `AgencyLiveDO` and `FeedSchedulerDO` rehydrate directly from Turso on hibernation wake using `this.ctx.id.name`.
+
 ## 1. Adding the GO Transit (Metrolinx) API Key
 1. Register for a free Metrolinx Open Data API key at https://api.openmetrolinx.com/OpenDataAPI/Help/Registration/en
 2. Bind it as a Worker secret:

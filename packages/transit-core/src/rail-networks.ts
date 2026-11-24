@@ -8,6 +8,27 @@ export interface RailStation {
   lon: number;
   /** Cumulative scheduled minutes from station[0] along the corridor. */
   offsetMin: number;
+  /** Major interchange / terminus stations have longer passenger dwell times. */
+  tier?: "hub" | "standard";
+}
+
+export interface RailHeadwaySchedule {
+  weekdayRushMin: number;
+  weekdayMiddayMin: number;
+  eveningMin: number;
+  lateNightMin: number;
+  weekendMin: number;
+}
+
+export interface RailKinematicsSpec {
+  /** Service acceleration in m/s^2 (e.g. 1.1 m/s^2 for TTC Toronto Rocket). */
+  accelMps2: number;
+  /** Service braking deceleration in m/s^2 (e.g. 1.2 m/s^2 for TTC subway). */
+  decelMps2: number;
+  /** Track speed ceiling in m/s (e.g. 22.2 m/s = 80 km/h for TTC subway). */
+  maxCruiseMps: number;
+  /** Multiplier converting Haversine chord distance to realistic track arc length. */
+  curvatureFactor: number;
 }
 
 export interface RailCorridor {
@@ -24,11 +45,17 @@ export interface RailCorridor {
   headsignRev: string;
   /** Local service hours (in minutes since midnight; >1440 means after midnight). */
   startMin: number;
+  /** Optional later Sunday start (e.g. TTC subway opens at 08:00 = 480 min on Sundays). */
+  sundayStartMin?: number;
   endMin: number;
-  /** Typical peak / off-peak headway in minutes. */
+  /** Typical peak / off-peak headway in minutes (kept for quick summaries). */
   peakHeadwayMin: number;
   offPeakHeadwayMin: number;
-  /** Dwell time at each station in seconds. */
+  /** Period-aware headway profile used for continuous departure schedule integration. */
+  headwaySchedule?: RailHeadwaySchedule;
+  /** Physical train acceleration, braking, and cruise limits for kinematic interpolation. */
+  kinematics?: RailKinematicsSpec;
+  /** Base dwell time at standard stations in seconds. */
   dwellSec: number;
   /** Prefix for synthetic timetable train IDs so they never collide with live GPS fleet IDs. */
   trainPrefix: string;
@@ -71,14 +98,28 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
     textColor: "#16140F",
     headsignFwd: "Finch",
     headsignRev: "Vaughan Metropolitan Centre",
-    startMin: 360, // 06:00
+    startMin: 360, // 06:00 Mon-Sat
+    sundayStartMin: 480, // 08:00 Sun
     endMin: 1545, // 01:45 (+1d)
-    peakHeadwayMin: 4,
-    offPeakHeadwayMin: 6,
-    dwellSec: 25,
+    peakHeadwayMin: 2.5,
+    offPeakHeadwayMin: 4.5,
+    headwaySchedule: {
+      weekdayRushMin: 2.5, // ATC (Automatic Train Control) rush headway
+      weekdayMiddayMin: 4.0,
+      eveningMin: 4.5,
+      lateNightMin: 5.5,
+      weekendMin: 4.5,
+    },
+    kinematics: {
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2, // ~80 km/h
+      curvatureFactor: 1.08,
+    },
+    dwellSec: 22,
     trainPrefix: "T1",
     stations: [
-      { stopId: "ttc-l1-vmc", name: "Vaughan Metropolitan Centre", lat: 43.7942, lon: -79.5275, offsetMin: 0 },
+      { stopId: "ttc-l1-vmc", name: "Vaughan Metropolitan Centre", lat: 43.7942, lon: -79.5275, offsetMin: 0, tier: "hub" },
       { stopId: "ttc-l1-hwy407", name: "Highway 407 Station", lat: 43.7832, lon: -79.5237, offsetMin: 3 },
       { stopId: "ttc-l1-pioneer", name: "Pioneer Village Station", lat: 43.7771, lon: -79.5095, offsetMin: 6 },
       { stopId: "ttc-l1-yorku", name: "York University Station", lat: 43.7741, lon: -79.4998, offsetMin: 8 },
@@ -89,33 +130,33 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
       { stopId: "ttc-l1-yorkdale", name: "Yorkdale Station", lat: 43.7247, lon: -79.4475, offsetMin: 22 },
       { stopId: "ttc-l1-lawrencew", name: "Lawrence West Station", lat: 43.7159, lon: -79.4441, offsetMin: 25 },
       { stopId: "ttc-l1-glencairn", name: "Glencairn Station", lat: 43.7088, lon: -79.4408, offsetMin: 27 },
-      { stopId: "ttc-l1-eglintonw", name: "Cedarvale (Eglinton West)", lat: 43.6992, lon: -79.4358, offsetMin: 29 },
+      { stopId: "ttc-l1-eglintonw", name: "Cedarvale (Eglinton West)", lat: 43.6992, lon: -79.4358, offsetMin: 29, tier: "hub" },
       { stopId: "ttc-l1-stclairw", name: "St Clair West Station", lat: 43.6839, lon: -79.4151, offsetMin: 33 },
       { stopId: "ttc-l1-dupont", name: "Dupont Station", lat: 43.6746, lon: -79.4068, offsetMin: 35 },
-      { stopId: "ttc-l1-spadina", name: "Spadina Station", lat: 43.6673, lon: -79.4038, offsetMin: 37 },
-      { stopId: "ttc-l1-stgeorge", name: "St George Station", lat: 43.6682, lon: -79.3998, offsetMin: 39 },
+      { stopId: "ttc-l1-spadina", name: "Spadina Station", lat: 43.6673, lon: -79.4038, offsetMin: 37, tier: "hub" },
+      { stopId: "ttc-l1-stgeorge", name: "St George Station", lat: 43.6682, lon: -79.3998, offsetMin: 39, tier: "hub" },
       { stopId: "ttc-l1-museum", name: "Museum Station", lat: 43.6671, lon: -79.3936, offsetMin: 41 },
       { stopId: "ttc-l1-queenspk", name: "Queen's Park Station", lat: 43.6599, lon: -79.3905, offsetMin: 43 },
       { stopId: "ttc-l1-stpatrick", name: "St Patrick Station", lat: 43.6548, lon: -79.3883, offsetMin: 45 },
       { stopId: "ttc-l1-osgoode", name: "Osgoode Station", lat: 43.6507, lon: -79.3866, offsetMin: 46 },
       { stopId: "ttc-l1-standrew", name: "St Andrew Station", lat: 43.6476, lon: -79.3848, offsetMin: 48 },
-      { stopId: "ttc-l1-union", name: "Union Station", lat: 43.6456, lon: -79.3806, offsetMin: 50 },
+      { stopId: "ttc-l1-union", name: "Union Station", lat: 43.6456, lon: -79.3806, offsetMin: 50, tier: "hub" },
       { stopId: "ttc-l1-king", name: "King Station", lat: 43.6491, lon: -79.3779, offsetMin: 52 },
       { stopId: "ttc-l1-queen", name: "Queen Station", lat: 43.6524, lon: -79.3792, offsetMin: 53 },
       { stopId: "ttc-l1-dundas", name: "TMU (Dundas) Station", lat: 43.6564, lon: -79.3808, offsetMin: 55 },
       { stopId: "ttc-l1-college", name: "College Station", lat: 43.6614, lon: -79.3831, offsetMin: 57 },
       { stopId: "ttc-l1-wellesley", name: "Wellesley Station", lat: 43.6654, lon: -79.3838, offsetMin: 58 },
-      { stopId: "ttc-l1-bloor", name: "Bloor-Yonge Station", lat: 43.6709, lon: -79.3857, offsetMin: 60 },
+      { stopId: "ttc-l1-bloor", name: "Bloor-Yonge Station", lat: 43.6709, lon: -79.3857, offsetMin: 60, tier: "hub" },
       { stopId: "ttc-l1-rosedale", name: "Rosedale Station", lat: 43.6768, lon: -79.3887, offsetMin: 62 },
       { stopId: "ttc-l1-summerhill", name: "Summerhill Station", lat: 43.6822, lon: -79.3908, offsetMin: 64 },
       { stopId: "ttc-l1-stclair", name: "St Clair Station", lat: 43.6879, lon: -79.3932, offsetMin: 66 },
       { stopId: "ttc-l1-davisville", name: "Davisville Station", lat: 43.6977, lon: -79.3972, offsetMin: 68 },
-      { stopId: "ttc-l1-eglinton", name: "Eglinton Station", lat: 43.7059, lon: -79.3987, offsetMin: 71 },
+      { stopId: "ttc-l1-eglinton", name: "Eglinton Station", lat: 43.7059, lon: -79.3987, offsetMin: 71, tier: "hub" },
       { stopId: "ttc-l1-lawrence", name: "Lawrence Station", lat: 43.7250, lon: -79.4022, offsetMin: 75 },
       { stopId: "ttc-l1-yorkmills", name: "York Mills Station", lat: 43.7441, lon: -79.4067, offsetMin: 79 },
-      { stopId: "ttc-l1-sheppard", name: "Sheppard-Yonge Station", lat: 43.7615, lon: -79.4109, offsetMin: 82 },
+      { stopId: "ttc-l1-sheppard", name: "Sheppard-Yonge Station", lat: 43.7615, lon: -79.4109, offsetMin: 82, tier: "hub" },
       { stopId: "ttc-l1-northyork", name: "North York Centre Station", lat: 43.7681, lon: -79.4128, offsetMin: 84 },
-      { stopId: "ttc-l1-finch", name: "Finch Station", lat: 43.7805, lon: -79.4154, offsetMin: 87 },
+      { stopId: "ttc-l1-finch", name: "Finch Station", lat: 43.7805, lon: -79.4154, offsetMin: 87, tier: "hub" },
     ],
   },
   {
@@ -130,13 +171,27 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
     headsignFwd: "Kennedy",
     headsignRev: "Kipling",
     startMin: 360,
+    sundayStartMin: 480,
     endMin: 1545,
-    peakHeadwayMin: 4,
-    offPeakHeadwayMin: 6,
-    dwellSec: 25,
+    peakHeadwayMin: 3.0,
+    offPeakHeadwayMin: 5.0,
+    headwaySchedule: {
+      weekdayRushMin: 3.0,
+      weekdayMiddayMin: 4.5,
+      eveningMin: 5.0,
+      lateNightMin: 6.0,
+      weekendMin: 5.0,
+    },
+    kinematics: {
+      accelMps2: 1.05,
+      decelMps2: 1.15,
+      maxCruiseMps: 21.5, // ~77 km/h T1 fleet
+      curvatureFactor: 1.06,
+    },
+    dwellSec: 22,
     trainPrefix: "T2",
     stations: [
-      { stopId: "ttc-l2-kipling", name: "Kipling Station", lat: 43.6375, lon: -79.5356, offsetMin: 0 },
+      { stopId: "ttc-l2-kipling", name: "Kipling Station", lat: 43.6375, lon: -79.5356, offsetMin: 0, tier: "hub" },
       { stopId: "ttc-l2-islington", name: "Islington Station", lat: 43.6454, lon: -79.5245, offsetMin: 3 },
       { stopId: "ttc-l2-royalyork", name: "Royal York Station", lat: 43.6482, lon: -79.5113, offsetMin: 5 },
       { stopId: "ttc-l2-oldmill", name: "Old Mill Station", lat: 43.6498, lon: -79.4946, offsetMin: 8 },
@@ -144,16 +199,16 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
       { stopId: "ttc-l2-runnymede", name: "Runnymede Station", lat: 43.6517, lon: -79.4758, offsetMin: 12 },
       { stopId: "ttc-l2-highpark", name: "High Park Station", lat: 43.6539, lon: -79.4668, offsetMin: 14 },
       { stopId: "ttc-l2-keele", name: "Keele Station", lat: 43.6556, lon: -79.4596, offsetMin: 16 },
-      { stopId: "ttc-l2-dundasw", name: "Dundas West Station", lat: 43.6569, lon: -79.4529, offsetMin: 18 },
+      { stopId: "ttc-l2-dundasw", name: "Dundas West Station", lat: 43.6569, lon: -79.4529, offsetMin: 18, tier: "hub" },
       { stopId: "ttc-l2-lansdowne", name: "Lansdowne Station", lat: 43.6592, lon: -79.4426, offsetMin: 20 },
       { stopId: "ttc-l2-dufferin", name: "Dufferin Station", lat: 43.6602, lon: -79.4357, offsetMin: 22 },
       { stopId: "ttc-l2-ossington", name: "Ossington Station", lat: 43.6623, lon: -79.4264, offsetMin: 24 },
       { stopId: "ttc-l2-christie", name: "Christie Station", lat: 43.6641, lon: -79.4184, offsetMin: 26 },
       { stopId: "ttc-l2-bathurst", name: "Bathurst Station", lat: 43.6660, lon: -79.4112, offsetMin: 28 },
-      { stopId: "ttc-l2-spadina", name: "Spadina Station", lat: 43.6673, lon: -79.4038, offsetMin: 30 },
-      { stopId: "ttc-l2-stgeorge", name: "St George Station", lat: 43.6682, lon: -79.3998, offsetMin: 31 },
+      { stopId: "ttc-l2-spadina", name: "Spadina Station", lat: 43.6673, lon: -79.4038, offsetMin: 30, tier: "hub" },
+      { stopId: "ttc-l2-stgeorge", name: "St George Station", lat: 43.6682, lon: -79.3998, offsetMin: 31, tier: "hub" },
       { stopId: "ttc-l2-bay", name: "Bay Station", lat: 43.6701, lon: -79.3900, offsetMin: 33 },
-      { stopId: "ttc-l2-bloor", name: "Bloor-Yonge Station", lat: 43.6709, lon: -79.3857, offsetMin: 35 },
+      { stopId: "ttc-l2-bloor", name: "Bloor-Yonge Station", lat: 43.6709, lon: -79.3857, offsetMin: 35, tier: "hub" },
       { stopId: "ttc-l2-sherbourne", name: "Sherbourne Station", lat: 43.6722, lon: -79.3764, offsetMin: 37 },
       { stopId: "ttc-l2-castlefrank", name: "Castle Frank Station", lat: 43.6737, lon: -79.3688, offsetMin: 39 },
       { stopId: "ttc-l2-broadview", name: "Broadview Station", lat: 43.6769, lon: -79.3585, offsetMin: 41 },
@@ -166,7 +221,7 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
       { stopId: "ttc-l2-mainst", name: "Main Street Station", lat: 43.6890, lon: -79.3016, offsetMin: 55 },
       { stopId: "ttc-l2-vicpark", name: "Victoria Park Station", lat: 43.6949, lon: -79.2886, offsetMin: 58 },
       { stopId: "ttc-l2-warden", name: "Warden Station", lat: 43.7113, lon: -79.2797, offsetMin: 62 },
-      { stopId: "ttc-l2-kennedy", name: "Kennedy Station", lat: 43.7324, lon: -79.2636, offsetMin: 66 },
+      { stopId: "ttc-l2-kennedy", name: "Kennedy Station", lat: 43.7324, lon: -79.2636, offsetMin: 66, tier: "hub" },
     ],
   },
   {
@@ -181,17 +236,31 @@ export const RAIL_CORRIDORS: RailCorridor[] = [
     headsignFwd: "Don Mills",
     headsignRev: "Sheppard-Yonge",
     startMin: 360,
+    sundayStartMin: 480,
     endMin: 1560,
-    peakHeadwayMin: 6,
-    offPeakHeadwayMin: 7,
-    dwellSec: 25,
+    peakHeadwayMin: 5.5,
+    offPeakHeadwayMin: 6.0,
+    headwaySchedule: {
+      weekdayRushMin: 5.5,
+      weekdayMiddayMin: 6.0,
+      eveningMin: 6.0,
+      lateNightMin: 6.5,
+      weekendMin: 6.0,
+    },
+    kinematics: {
+      accelMps2: 1.1,
+      decelMps2: 1.2,
+      maxCruiseMps: 22.2,
+      curvatureFactor: 1.05,
+    },
+    dwellSec: 20,
     trainPrefix: "T4",
     stations: [
-      { stopId: "ttc-l4-sheppard", name: "Sheppard-Yonge Station", lat: 43.7615, lon: -79.4109, offsetMin: 0 },
+      { stopId: "ttc-l4-sheppard", name: "Sheppard-Yonge Station", lat: 43.7615, lon: -79.4109, offsetMin: 0, tier: "hub" },
       { stopId: "ttc-l4-bayview", name: "Bayview Station", lat: 43.7669, lon: -79.3867, offsetMin: 4 },
       { stopId: "ttc-l4-bessarion", name: "Bessarion Station", lat: 43.7691, lon: -79.3764, offsetMin: 6 },
       { stopId: "ttc-l4-leslie", name: "Leslie Station", lat: 43.7712, lon: -79.3653, offsetMin: 9 },
-      { stopId: "ttc-l4-donmills", name: "Don Mills Station", lat: 43.7755, lon: -79.3463, offsetMin: 12 },
+      { stopId: "ttc-l4-donmills", name: "Don Mills Station", lat: 43.7755, lon: -79.3463, offsetMin: 12, tier: "hub" },
     ],
   },
 
@@ -509,9 +578,190 @@ export function getRailCorridorsForAgency(agencyId: string): RailCorridorGeo[] {
   }));
 }
 
-function isPeakHour(serviceMin: number): boolean {
+export type ServiceDayType = "weekday" | "saturday" | "sunday";
+
+export function getServiceDayType(serviceDate: string): ServiceDayType {
+  const parts = serviceDate.split("-").map(Number);
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return "weekday";
+  const jsDay = new Date(Date.UTC(parts[0]!, parts[1]! - 1, parts[2]!)).getUTCDay();
+  if (jsDay === 0) return "sunday";
+  if (jsDay === 6) return "saturday";
+  return "weekday";
+}
+
+function isPeakHour(serviceMin: number, dayType: ServiceDayType = "weekday"): boolean {
+  if (dayType !== "weekday") return false;
   const m = serviceMin % 1440;
-  return (m >= 420 && m <= 570) || (m >= 930 && m <= 1140); // 7:00-9:30 AM or 3:30-7:00 PM
+  return (m >= 420 && m <= 570) || (m >= 930 && m <= 1125); // 07:00-09:30 or 15:30-18:45
+}
+
+/**
+ * Determine the operational headway (minutes between trains) for a rail corridor at a given
+ * service date and service minute (accounting for weekday rush, midday, evening, late night,
+ * and weekend schedules).
+ */
+export function getCorridorHeadwayMinutes(
+  corridor: RailCorridor,
+  serviceMin: number,
+  dayType: ServiceDayType = "weekday"
+): number {
+  const sched = corridor.headwaySchedule;
+  if (!sched) {
+    return isPeakHour(serviceMin, dayType) ? corridor.peakHeadwayMin : corridor.offPeakHeadwayMin;
+  }
+  if (dayType !== "weekday") {
+    return serviceMin >= 1320 ? Math.max(sched.weekendMin, sched.lateNightMin) : sched.weekendMin;
+  }
+  if (serviceMin < 420 || serviceMin >= 1320) return sched.lateNightMin; // before 07:00 or after 22:00
+  if (isPeakHour(serviceMin, dayType)) return sched.weekdayRushMin;
+  if (serviceMin < 930) return sched.weekdayMiddayMin; // 09:30-15:30
+  return sched.eveningMin; // 18:45-22:00
+}
+
+/**
+ * Integrate a continuous, jump-free departure schedule across the entire service day:
+ *   t_{k+1} = t_k + H(t_k)
+ * so trains smoothly tighten/widen headways at rush-hour boundaries instead of teleporting.
+ */
+export function buildCorridorDepartureSchedule(
+  corridor: RailCorridor,
+  serviceDate: string,
+  directionId: 0 | 1
+): number[] {
+  const dayType = getServiceDayType(serviceDate);
+  const startMin =
+    dayType === "sunday" && corridor.sundayStartMin !== undefined
+      ? corridor.sundayStartMin
+      : corridor.startMin;
+  const firstHeadway = getCorridorHeadwayMinutes(corridor, startMin, dayType);
+  const phaseShift = directionId === 1 ? firstHeadway / 2 : 0;
+
+  const departures: number[] = [];
+  let t = startMin + phaseShift;
+  let guard = 0;
+  while (t <= corridor.endMin && guard < 1200) {
+    departures.push(Math.round(t * 10) / 10);
+    const h = Math.max(1, getCorridorHeadwayMinutes(corridor, t, dayType));
+    t += h;
+    guard++;
+  }
+  return departures;
+}
+
+export interface TrapezoidalKinematicsResult {
+  /** Normalized progress along segment [0, 1]. */
+  fraction: number;
+  /** Instantaneous train speed in m/s. */
+  speedMps: number;
+  /** Current motion phase between stations. */
+  phase: "accelerating" | "cruising" | "braking";
+  /** Solved cruise (or triangular peak) speed for this segment in m/s. */
+  cruiseSpeedMps: number;
+}
+
+const DEFAULT_SUBWAY_KINEMATICS: RailKinematicsSpec = {
+  accelMps2: 1.1,
+  decelMps2: 1.2,
+  maxCruiseMps: 22.2,
+  curvatureFactor: 1.08,
+};
+
+const DEFAULT_COMMUTER_KINEMATICS: RailKinematicsSpec = {
+  accelMps2: 0.75,
+  decelMps2: 0.85,
+  maxCruiseMps: 36.1,
+  curvatureFactor: 1.06,
+};
+
+/**
+ * Exact trapezoidal (acceleration -> cruise -> braking) train kinematics solver.
+ *
+ * Given track distance D and net moving time T_move, solves:
+ *   D = v_c * T_move - 0.5 * v_c^2 * (1/a + 1/d)
+ * for cruise velocity v_c, falling back cleanly to a smooth triangular profile
+ * when a segment is too short to reach cruise speed or hits the track speed ceiling.
+ */
+export function computeTrapezoidalKinematics(input: {
+  trackDistanceMeters: number;
+  moveDurationSec: number;
+  elapsedMoveSec: number;
+  accelMps2: number;
+  decelMps2: number;
+  maxCruiseMps: number;
+}): TrapezoidalKinematicsResult {
+  const { trackDistanceMeters, moveDurationSec, elapsedMoveSec, accelMps2, decelMps2, maxCruiseMps } = input;
+  const D = Math.max(1, trackDistanceMeters);
+  const T = Math.max(5, moveDurationSec);
+  const t = Math.max(0, Math.min(T, elapsedMoveSec));
+  const a = Math.max(0.2, accelMps2);
+  const d = Math.max(0.2, decelMps2);
+  const alpha = 1 / a + 1 / d;
+
+  // Solve 0.5 * alpha * v^2 - T * v + D = 0
+  const disc = T * T - 2 * alpha * D;
+  let vCruise: number;
+  let tAccel: number;
+  let tDecel: number;
+  let tCruise: number;
+
+  if (disc >= 0) {
+    vCruise = Math.min(maxCruiseMps, (T - Math.sqrt(disc)) / alpha);
+    tAccel = vCruise / a;
+    tDecel = vCruise / d;
+    tCruise = Math.max(0, T - tAccel - tDecel);
+  } else {
+    // Segment time is tighter than nominal accel/decel allows: scale into a symmetric triangular profile
+    vCruise = Math.min(maxCruiseMps, (2 * D) / T);
+    const ratio = d / (a + d);
+    tAccel = T * ratio;
+    tDecel = T * (1 - ratio);
+    tCruise = 0;
+  }
+
+  // Total area under this trapezoid/triangle (used to normalize fraction strictly into [0, 1])
+  const areaAccel = 0.5 * vCruise * tAccel;
+  const areaCruise = vCruise * tCruise;
+  const areaDecel = 0.5 * vCruise * tDecel;
+  const totalArea = Math.max(1e-6, areaAccel + areaCruise + areaDecel);
+
+  let s: number;
+  let v: number;
+  let phase: TrapezoidalKinematicsResult["phase"];
+
+  if (t < tAccel && tAccel > 0) {
+    const k = t / tAccel;
+    s = 0.5 * vCruise * t * k;
+    v = vCruise * k;
+    phase = "accelerating";
+  } else if (t < tAccel + tCruise) {
+    s = areaAccel + vCruise * (t - tAccel);
+    v = vCruise;
+    phase = "cruising";
+  } else {
+    const rem = Math.max(0, T - t);
+    const k = tDecel > 0 ? rem / tDecel : 0;
+    s = totalArea - 0.5 * vCruise * rem * k;
+    v = vCruise * k;
+    phase = "braking";
+  }
+
+  return {
+    fraction: Math.max(0, Math.min(1, s / totalArea)),
+    speedMps: Number(Math.max(0, v).toFixed(1)),
+    phase,
+    cruiseSpeedMps: Number(vCruise.toFixed(1)),
+  };
+}
+
+function getStationDwellSeconds(
+  corridor: RailCorridor,
+  station: RailStation,
+  segDurSec: number,
+  isPeak: boolean
+): number {
+  const base = corridor.dwellSec;
+  const hubBoost = station.tier === "hub" ? (isPeak ? 14 : 8) : isPeak ? 4 : 0;
+  return Math.min(base + hubBoost, Math.floor(segDurSec * 0.42));
 }
 
 interface ActiveTrainSlot {
@@ -522,15 +772,25 @@ interface ActiveTrainSlot {
   orderedStations: RailStation[];
   totalRunSec: number;
   slotIndex: number;
+  isPeak: boolean;
 }
 
-function activeSlotsForCorridor(corridor: RailCorridor, serviceSeconds: number): ActiveTrainSlot[] {
+function activeSlotsForCorridor(
+  corridor: RailCorridor,
+  serviceDate: string,
+  serviceSeconds: number
+): ActiveTrainSlot[] {
   const serviceMin = serviceSeconds / 60;
-  if (serviceMin < corridor.startMin || serviceMin > corridor.endMin) return [];
+  const dayType = getServiceDayType(serviceDate);
+  const startMin =
+    dayType === "sunday" && corridor.sundayStartMin !== undefined
+      ? corridor.sundayStartMin
+      : corridor.startMin;
+  if (serviceMin < startMin || serviceMin > corridor.endMin + 120) return [];
 
   const totalRunMin = corridor.stations[corridor.stations.length - 1]!.offsetMin;
   const totalRunSec = totalRunMin * 60;
-  const headwayMin = isPeakHour(serviceMin) ? corridor.peakHeadwayMin : corridor.offPeakHeadwayMin;
+  const peakNow = isPeakHour(serviceMin, dayType);
 
   const revStations: RailStation[] = [...corridor.stations].reverse().map((s) => ({
     ...s,
@@ -541,18 +801,12 @@ function activeSlotsForCorridor(corridor: RailCorridor, serviceSeconds: number):
 
   for (const dir of [0, 1] as const) {
     const ordered = dir === 0 ? corridor.stations : revStations;
-    // Slight deterministic offset between directions so opposing trains don't overlap identically
-    const phaseShift = dir === 1 ? Math.floor(headwayMin / 2) : 0;
-    const earliestDep = Math.max(corridor.startMin, Math.floor((serviceMin - totalRunMin) / headwayMin) * headwayMin);
-    const latestDep = Math.min(corridor.endMin, Math.floor(serviceMin / headwayMin) * headwayMin + headwayMin);
+    const departures = buildCorridorDepartureSchedule(corridor, serviceDate, dir);
 
-    let slotIdx = 0;
-    for (let dep = earliestDep; dep <= latestDep; dep += headwayMin) {
-      const actualDep = dep + phaseShift;
-      if (actualDep < corridor.startMin || actualDep > corridor.endMin) continue;
+    for (let idx = 0; idx < departures.length; idx++) {
+      const actualDep = departures[idx]!;
       const elapsedSec = serviceSeconds - actualDep * 60;
       if (elapsedSec < 0 || elapsedSec > totalRunSec) continue;
-      slotIdx++;
       slots.push({
         corridor,
         directionId: dir,
@@ -560,7 +814,8 @@ function activeSlotsForCorridor(corridor: RailCorridor, serviceSeconds: number):
         elapsedSec,
         orderedStations: ordered,
         totalRunSec,
-        slotIndex: Math.floor(actualDep / headwayMin) % 90 + 10,
+        slotIndex: (idx % 90) + 10,
+        isPeak: peakNow,
       });
     }
   }
@@ -577,7 +832,7 @@ function interpolateSlot(slot: ActiveTrainSlot): {
   stopIndex: number;
   stop: RailStation;
 } {
-  const { orderedStations, elapsedSec, corridor } = slot;
+  const { orderedStations, elapsedSec, corridor, isPeak } = slot;
   let segIdx = 0;
   for (let i = 0; i < orderedStations.length - 1; i++) {
     if (elapsedSec >= orderedStations[i]!.offsetMin * 60) {
@@ -593,9 +848,9 @@ function interpolateSlot(slot: ActiveTrainSlot): {
   const segEndSec = b.offsetMin * 60;
   const segDurSec = Math.max(30, segEndSec - segStartSec);
   const inSegSec = Math.max(0, elapsedSec - segStartSec);
-  const dwell = Math.min(corridor.dwellSec, Math.floor(segDurSec * 0.35));
-  const segDist = haversineMeters(a.lat, a.lon, b.lat, b.lon);
-  const bearingDeg = segDist > 5 ? bearingDegrees(a.lat, a.lon, b.lat, b.lon) : 0;
+  const dwell = getStationDwellSeconds(corridor, a, segDurSec, isPeak);
+  const chordDist = haversineMeters(a.lat, a.lon, b.lat, b.lon);
+  const bearingDeg = chordDist > 5 ? bearingDegrees(a.lat, a.lon, b.lat, b.lon) : 0;
 
   if (inSegSec <= dwell || a.stopId === b.stopId) {
     return {
@@ -609,19 +864,30 @@ function interpolateSlot(slot: ActiveTrainSlot): {
     };
   }
 
+  const spec =
+    corridor.kinematics ??
+    (corridor.mode === "subway" ? DEFAULT_SUBWAY_KINEMATICS : DEFAULT_COMMUTER_KINEMATICS);
   const moveDur = Math.max(15, segDurSec - dwell);
-  const frac = Math.min(1, (inSegSec - dwell) / moveDur);
-  const lat = a.lat + (b.lat - a.lat) * frac;
-  const lon = a.lon + (b.lon - a.lon) * frac;
-  const speedMps = Number((segDist / moveDur).toFixed(1));
-  const currentStatus = frac >= 0.82 ? "INCOMING_AT" : "IN_TRANSIT_TO";
+  const kin = computeTrapezoidalKinematics({
+    trackDistanceMeters: chordDist * spec.curvatureFactor,
+    moveDurationSec: moveDur,
+    elapsedMoveSec: inSegSec - dwell,
+    accelMps2: spec.accelMps2,
+    decelMps2: spec.decelMps2,
+    maxCruiseMps: spec.maxCruiseMps,
+  });
+
+  const lat = a.lat + (b.lat - a.lat) * kin.fraction;
+  const lon = a.lon + (b.lon - a.lon) * kin.fraction;
+  const currentStatus =
+    kin.phase === "braking" && kin.fraction >= 0.78 ? "INCOMING_AT" : "IN_TRANSIT_TO";
   const targetIdx = Math.min(segIdx + 1, orderedStations.length - 1);
 
   return {
     lat,
     lon,
     bearingDeg,
-    speedMps,
+    speedMps: kin.speedMps,
     currentStatus,
     stopIndex: targetIdx,
     stop: orderedStations[targetIdx]!,
@@ -655,7 +921,7 @@ export function generateScheduledRailVehicles(
       continue;
     }
 
-    const slots = activeSlotsForCorridor(corridor, ctx.serviceSeconds);
+    const slots = activeSlotsForCorridor(corridor, ctx.serviceDate, ctx.serviceSeconds);
     for (const slot of slots) {
       const pos = interpolateSlot(slot);
       const dirTag = slot.directionId === 0 ? "A" : "B";
@@ -747,6 +1013,7 @@ export function getScheduledRailRideTimeline(
       : [...corridor.stations].reverse().map((s) => ({ ...s, offsetMin: totalRunMin - s.offsetMin }));
 
   const elapsedSec = Math.max(0, Math.min(totalRunMin * 60, ctx.serviceSeconds - departMin * 60));
+  const dayType = getServiceDayType(ctx.serviceDate);
   const slot: ActiveTrainSlot = {
     corridor,
     directionId,
@@ -754,7 +1021,8 @@ export function getScheduledRailRideTimeline(
     elapsedSec,
     orderedStations,
     totalRunSec: totalRunMin * 60,
-    slotIndex: Math.floor(departMin / Math.max(1, corridor.offPeakHeadwayMin)) % 90 + 10,
+    slotIndex: (Math.floor(departMin / Math.max(1, corridor.offPeakHeadwayMin)) % 90) + 10,
+    isPeak: isPeakHour(ctx.serviceSeconds / 60, dayType),
   };
   const pos = interpolateSlot(slot);
   const nowIso = new Date(nowMs).toISOString();
@@ -904,8 +1172,7 @@ export function findRailPlanCandidates(input: {
 
     const walkStartMin = Math.max(1, Math.round(bestOrig.dist / 78));
     const readyMin = serviceMin + walkStartMin;
-    const headway = isPeakHour(readyMin) ? corridor.peakHeadwayMin : corridor.offPeakHeadwayMin;
-    const phaseShift = directionId === 1 ? Math.floor(headway / 2) : 0;
+    const departures = buildCorridorDepartureSchedule(corridor, ctx.serviceDate, directionId);
 
     const upcomingDepartures: Array<{
       departureTime: string;
@@ -916,16 +1183,10 @@ export function findRailPlanCandidates(input: {
       headsign: string;
     }> = [];
 
-    // Find next 4 trains departing originStation on or after readyMin
-    const firstOriginDep = Math.max(
-      corridor.startMin + origOffset,
-      Math.ceil((readyMin - origOffset - phaseShift) / headway) * headway + phaseShift + origOffset
-    );
-
-    for (let k = 0; k < 4; k++) {
-      const depMinAtStation = firstOriginDep + k * headway;
-      const tripStartMin = depMinAtStation - origOffset;
-      if (tripStartMin < corridor.startMin || tripStartMin > corridor.endMin) continue;
+    // Find next 4 trains departing originStation on or after readyMin using the integrated schedule
+    for (const tripStartMin of departures) {
+      const depMinAtStation = tripStartMin + origOffset;
+      if (depMinAtStation < readyMin) continue;
       if (depMinAtStation > readyMin + 180) break;
 
       const deltaFromDepartMs = Math.round((depMinAtStation - serviceMin) * 60_000);
@@ -939,6 +1200,7 @@ export function findRailPlanCandidates(input: {
         rideMinutes,
         headsign,
       });
+      if (upcomingDepartures.length >= 4) break;
     }
 
     results.push({

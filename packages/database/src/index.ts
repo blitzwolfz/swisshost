@@ -1,4 +1,4 @@
-import type { AgencyConfig, Observation } from "@swisshost/contracts";
+import type { AgencyConfig, FeedKind, LiveVehicleState, Observation } from "@swisshost/contracts";
 export { createTursoD1Adapter, decodeHranaValue, encodeHranaArg, splitSqlStatements } from "./turso";
 
 export interface QuotaStatus {
@@ -315,6 +315,189 @@ export async function insertObservationChunk(
     .run();
 
   return { chunkId, rowCount: observations.length };
+}
+
+export interface PersistedFeedConfig {
+  id: string;
+  agencyId: string;
+  kind: FeedKind;
+  adapter: string;
+  url: string;
+  fallbackUrl: string | null;
+  authQueryParam: string | null;
+  authSecretRef: string | null;
+  refreshSeconds: number;
+  staleAfterSeconds: number;
+  timezone: string;
+  archivePermitted: boolean;
+  enabled: boolean;
+}
+
+/**
+ * Load a feed scheduler configuration directly from Turso/SQL (used when FeedSchedulerDO wakes
+ * from Cloudflare hibernation without touching DO SQLite storage).
+ */
+export async function loadFeedConfigFromTurso(
+  db: D1Database,
+  feedId: string
+): Promise<PersistedFeedConfig | null> {
+  const row = await db
+    .prepare(
+      `SELECT f.id, f.agency_id, f.kind, f.adapter, f.url, f.fallback_url,
+              f.auth_query_param, f.auth_secret_ref, f.refresh_seconds, f.stale_after_seconds,
+              f.enabled, a.timezone, a.archive_policy, a.enabled as agency_enabled
+       FROM feeds f
+       JOIN agencies a ON a.id = f.agency_id
+       WHERE f.id = ?
+       LIMIT 1`
+    )
+    .bind(feedId)
+    .first<{
+      id: string;
+      agency_id: string;
+      kind: FeedKind;
+      adapter: string;
+      url: string;
+      fallback_url: string | null;
+      auth_query_param: string | null;
+      auth_secret_ref: string | null;
+      refresh_seconds: number;
+      stale_after_seconds: number;
+      enabled: number;
+      timezone: string;
+      archive_policy: string;
+      agency_enabled: number;
+    }>();
+
+  if (!row) return null;
+  return {
+    id: row.id,
+    agencyId: row.agency_id,
+    kind: row.kind,
+    adapter: row.adapter,
+    url: row.url,
+    fallbackUrl: row.fallback_url ?? null,
+    authQueryParam: row.auth_query_param ?? null,
+    authSecretRef: row.auth_secret_ref ?? null,
+    refreshSeconds: Number(row.refresh_seconds || 60),
+    staleAfterSeconds: Number(row.stale_after_seconds || 120),
+    timezone: row.timezone || "America/Toronto",
+    archivePermitted: (row.archive_policy || "permitted") !== "prohibited",
+    enabled: row.enabled === 1 && row.agency_enabled === 1,
+  };
+}
+
+/**
+ * Rehydrate the latest live fleet snapshot for any agency directly from Turso `observation_chunks`
+ * (0 Cloudflare DO SQLite writes). Merges the most recent chunks within `maxAgeMinutes` and
+ * returns deduplicated vehicle states ordered by freshness.
+ */
+export async function loadLatestLiveVehiclesFromTurso(
+  db: D1Database,
+  agencyId: string,
+  maxAgeMinutes = 15,
+  staleAfterSeconds = 120
+): Promise<{
+  vehicles: LiveVehicleState[];
+  lastSuccessAt: string | null;
+  staleAfterSeconds: number;
+}> {
+  const cutoffIso = new Date(Date.now() - maxAgeMinutes * 60_000).toISOString();
+  const [chunksRes, feedRow] = await Promise.all([
+    db
+      .prepare(
+        `SELECT data_json, window_end, created_at
+         FROM observation_chunks
+         WHERE agency_id = ? AND created_at >= ?
+         ORDER BY created_at DESC
+         LIMIT 3`
+      )
+      .bind(agencyId, cutoffIso)
+      .all<{ data_json: string; window_end: string; created_at: string }>(),
+    db
+      .prepare(
+        `SELECT stale_after_seconds, last_success_at
+         FROM feeds
+         WHERE agency_id = ? AND kind = 'vehicle_positions'
+         LIMIT 1`
+      )
+      .bind(agencyId)
+      .first<{ stale_after_seconds: number | null; last_success_at: string | null }>(),
+  ]);
+
+  const effectiveStaleSec = Number(feedRow?.stale_after_seconds || staleAfterSeconds);
+  const nowMs = Date.now();
+  const byVehicle = new Map<string, { obsMs: number; state: LiveVehicleState }>();
+  let latestChunkAt: string | null = feedRow?.last_success_at ?? null;
+
+  // Iterate newest chunks first; keep the newest observation per vehicleId
+  for (const ch of chunksRes.results) {
+    if (!latestChunkAt || Date.parse(ch.created_at) > Date.parse(latestChunkAt)) {
+      latestChunkAt = ch.created_at;
+    }
+    let rows: CompactObservationRow[];
+    try {
+      rows = parseObservationChunkRows(ch.data_json);
+    } catch {
+      continue;
+    }
+    for (const r of rows) {
+      if (!r.v || !Number.isFinite(r.la) || !Number.isFinite(r.lo)) continue;
+      const obsMs = Date.parse(r.ts || r.rx || ch.created_at);
+      const validObsMs = Number.isFinite(obsMs) ? obsMs : nowMs;
+      const existing = byVehicle.get(r.v);
+      if (existing && existing.obsMs >= validObsMs) continue;
+
+      const ageSeconds = Math.max(0, Math.round((nowMs - validObsMs) / 1000));
+      const freshness: LiveVehicleState["freshness"] =
+        ageSeconds > effectiveStaleSec
+          ? "stale"
+          : ageSeconds > Math.round(effectiveStaleSec * 0.65)
+            ? "delayed"
+            : "fresh";
+
+      const tb =
+        r.tb === "vehicle" || r.tb === "feed" || r.tb === "receipt" ? r.tb : "receipt";
+
+      byVehicle.set(r.v, {
+        obsMs: validObsMs,
+        state: {
+          agencyId,
+          sourceVehicleId: r.v,
+          vehicleId: r.v,
+          fleetNumber: r.f || r.v,
+          label: r.f || null,
+          routeId: r.r ?? null,
+          tripId: r.t ?? null,
+          blockId: r.b ?? null,
+          directionId: r.d ?? null,
+          lat: r.la,
+          lon: r.lo,
+          bearingDeg: r.hd ?? null,
+          speedMps: r.sp ?? null,
+          scheduleDeviationSec: r.sd ?? null,
+          currentStatus: null,
+          stopId: r.st ?? null,
+          stopSequence: null,
+          occupancyStatus: null,
+          observedAt: r.ts || null,
+          receivedAt: r.rx || ch.created_at,
+          timestampBasis: tb,
+          ageSeconds,
+          freshness,
+          qualityFlags: [],
+          matchMethod: r.mm || "unmatched",
+          matchConfidence: Number(r.mc || 0),
+        },
+      });
+    }
+  }
+
+  return {
+    vehicles: Array.from(byVehicle.values()).map((e) => e.state),
+    lastSuccessAt: latestChunkAt,
+    staleAfterSeconds: effectiveStaleSec,
+  };
 }
 
 /**
