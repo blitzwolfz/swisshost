@@ -64,9 +64,9 @@ export function StopsPage() {
             <tr>
               <th>Code</th>
               <th>Stop</th>
-              <th>Platform</th>
+              <th className="hidden md:table-cell">Platform</th>
               <th>Accessibility</th>
-              <th>Coordinates</th>
+              <th className="hidden md:table-cell">Coordinates</th>
             </tr>
           </thead>
           <tbody>
@@ -85,7 +85,7 @@ export function StopsPage() {
                   <td className="font-bold">
                     <Link to={`/stops/${effectiveAgency}/${encodeURIComponent(s.stop_id)}`}>{s.name}</Link>
                   </td>
-                  <td>{s.platform_code ?? <span className="sh-muted">None</span>}</td>
+                  <td className="hidden md:table-cell">{s.platform_code ?? <span className="sh-muted">None</span>}</td>
                   <td>
                     {s.wheelchair_boarding === 1 ? (
                       "Accessible"
@@ -95,7 +95,7 @@ export function StopsPage() {
                       <span className="sh-muted">Unknown</span>
                     )}
                   </td>
-                  <td className="tabular-nums sh-muted">
+                  <td className="hidden md:table-cell tabular-nums sh-muted">
                     {s.lat.toFixed(4)}, {s.lon.toFixed(4)}
                   </td>
                 </tr>
