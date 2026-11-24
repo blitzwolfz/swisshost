@@ -1,0 +1,19 @@
+{
+  "name": "@swisshost/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@swisshost/adapters": "workspace:*",
+    "@swisshost/analytics": "workspace:*",
+    "@swisshost/contracts": "workspace:*",
+    "@swisshost/database": "workspace:*",
+    "@swisshost/transit-core": "workspace:*",
+    "fflate": "^0.8.2",
+    "hono": "^4.7.6",
+    "zod": "^3.24.2"
+  }
+}

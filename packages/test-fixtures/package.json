@@ -1,0 +1,15 @@
+{
+  "name": "@swisshost/test-fixtures",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@swisshost/contracts": "workspace:*",
+    "fflate": "^0.8.2"
+  }
+}

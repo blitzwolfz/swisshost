@@ -1,0 +1,320 @@
+@import "tailwindcss";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+/* Swisshost Red-and-Gold Swiss Transit Design System (WCAG 2.2 AA checked) */
+:root {
+  --brand-red: #ff0000;
+  --brand-gold: #ffff00;
+  --primary: #b91c1c;
+  --primary-hover: #991b1b;
+  --primary-soft: #fef2f2;
+  --gold-accent: #8a5a00;
+  --gold-surface: #fff4c2;
+  --bg: #fafafa;
+  --bg-elevated: #ffffff;
+  --surface: #f3f3f4;
+  --surface-glass: rgba(255, 255, 255, 0.9);
+  --text: #141416;
+  --text-muted: #55555d;
+  --border: #e2e2e6;
+  --border-strong: #c8c8d0;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 18px 40px -8px rgba(0, 0, 0, 0.16), 0 4px 12px rgba(0, 0, 0, 0.08);
+  --status-ok: #15803d;
+  --status-ok-bg: #dcfce7;
+  --status-warn: #92400e;
+  --status-warn-bg: #fef3c7;
+  --status-err: #b91c1c;
+  --status-err-bg: #fee2e2;
+}
+
+.dark {
+  --brand-red: #ff0000;
+  --brand-gold: #ffff00;
+  --primary: #ff7a7a;
+  --primary-hover: #fca5a5;
+  --primary-soft: rgba(185, 28, 28, 0.18);
+  --gold-accent: #facc15;
+  --gold-surface: #3a2d08;
+  --bg: #0f0f11;
+  --bg-elevated: #17171a;
+  --surface: #1f1f24;
+  --surface-glass: rgba(20, 20, 24, 0.88);
+  --text: #f4f4f6;
+  --text-muted: #a6a6b2;
+  --border: #2c2c34;
+  --border-strong: #3f3f4a;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 28px -4px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 20px 44px -8px rgba(0, 0, 0, 0.7);
+  --status-ok: #4ade80;
+  --status-ok-bg: rgba(21, 128, 61, 0.22);
+  --status-warn: #fbbf24;
+  --status-warn-bg: rgba(146, 64, 14, 0.28);
+  --status-err: #f87171;
+  --status-err-bg: rgba(185, 28, 28, 0.28);
+}
+
+html,
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  margin: 0;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--gold-accent);
+  outline-offset: 2px;
+}
+
+/* Swiss Red-and-Gold top architectural hairline */
+.sh-brand-bar {
+  height: 3px;
+  background: linear-gradient(90deg, #ff0000 0%, #b91c1c 82%, #facc15 82%, #ffff00 100%);
+}
+
+.sh-card {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.sh-surface {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.sh-glass {
+  background-color: var(--surface-glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+.sh-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+}
+
+.sh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.sh-table th {
+  text-align: left;
+  padding: 0.65rem 0.9rem;
+  background-color: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.sh-table td {
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.sh-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.sh-table tbody tr {
+  transition: background-color 110ms ease;
+}
+
+.sh-table tbody tr:hover {
+  background-color: var(--surface);
+}
+
+/* Route shield pill (Swiss / Ontario transit signage) */
+.sh-route-shield {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.4rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sh-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.sh-pill-ok {
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
+}
+
+.sh-pill-warn {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+}
+
+.sh-pill-err {
+  background: var(--status-err-bg);
+  color: var(--status-err);
+}
+
+.sh-pill-muted {
+  background: var(--surface);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.sh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease;
+  white-space: nowrap;
+}
+
+.sh-btn:hover {
+  background-color: var(--surface);
+  border-color: var(--border-strong);
+  text-decoration: none;
+}
+
+.sh-btn:active {
+  transform: translateY(0.5px);
+}
+
+.sh-btn-primary {
+  background-color: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+}
+
+.sh-btn-primary:hover {
+  background-color: #991b1b;
+  border-color: #991b1b;
+  color: #ffffff;
+}
+
+.sh-input {
+  padding: 0.42rem 0.7rem;
+  font-size: 0.84rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--bg-elevated);
+  color: var(--text);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.sh-input:focus {
+  outline: none;
+  border-color: var(--gold-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold-accent) 25%, transparent);
+}
+
+.sh-highlight {
+  background-color: var(--gold-surface);
+}
+
+.sh-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  display: inline-block;
+  position: relative;
+}
+
+.sh-pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.35;
+  animation: sh-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes sh-ping {
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+/* MapLibre control polish */
+.maplibregl-ctrl-group {
+  border-radius: 10px !important;
+  overflow: hidden;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+.dark .maplibregl-ctrl-group {
+  background: #17171a !important;
+}
+
+.dark .maplibregl-ctrl-group button {
+  filter: invert(0.92);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .sh-pulse-dot::after {
+    display: none;
+  }
+}

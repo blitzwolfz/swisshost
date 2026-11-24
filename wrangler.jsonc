@@ -1,0 +1,82 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "swisshost",
+  "main": "apps/api/src/index.ts",
+  "compatibility_date": "2026-11-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "@swisshost/contracts": "./packages/contracts/src/index.ts",
+    "@swisshost/database": "./packages/database/src/index.ts",
+    "@swisshost/transit-core": "./packages/transit-core/src/index.ts",
+    "@swisshost/adapters": "./packages/adapters/src/index.ts",
+    "@swisshost/analytics": "./packages/analytics/src/index.ts"
+  },
+  "account_id": "58300dd8fb7b182e971d4c01b6b99995",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "swisshost.cc", "custom_domain": true },
+    { "pattern": "www.swisshost.cc", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/admin/*", "/.well-known/*", "/openapi.json"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.2
+    }
+  },
+  "vars": {
+    "APP_NAME": "Swisshost",
+    "PUBLIC_ORIGIN": "https://swisshost.cc",
+    "GITHUB_ARCHIVE_REPO": "blitzwolfz/swisshost-data",
+    "GITHUB_ARCHIVE_BRANCH": "main",
+    "DEFAULT_STALE_SECONDS": "90",
+    "DAILY_D1_WRITE_BUDGET": "80000",
+    "DAILY_DO_REQUEST_BUDGET": "80000",
+    "DAILY_WORKER_REQUEST_BUDGET": "80000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "swisshost-db",
+      "database_id": "8d0399d0-25aa-4883-99ee-1ba4ff20dc3f",
+      "migrations_dir": "packages/database/migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "dafb7b7092f94a2097793fdfb21b8e0f"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FEED_SCHEDULER",
+        "class_name": "FeedSchedulerDO"
+      },
+      {
+        "name": "AGENCY_LIVE",
+        "class_name": "AgencyLiveDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FeedSchedulerDO", "AgencyLiveDO"]
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 * * * *",
+      "0 0,12 * * *"
+    ]
+  }
+}

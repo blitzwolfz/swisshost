@@ -1,0 +1,443 @@
+import React, { useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle, ArrowUpRight, History as HistoryIcon, MapPin, Star } from "lucide-react";
+import { TransitMap } from "../components/TransitMap";
+import { apiJson, formatDelay, formatSpeed, type LiveVehicle } from "../lib/api";
+import { usePreferences } from "../lib/preferences";
+
+interface RouteRow {
+  routeId: string;
+  shortName: string;
+  longName: string;
+  routeType: number;
+  color: string | null;
+  textColor: string | null;
+  activeVehicles: number;
+  activeAlerts: number;
+  source: string;
+}
+
+export function RoutesPage() {
+  const { agencyId } = usePreferences();
+  const effectiveAgency = agencyId === "all" ? "guelph" : agencyId;
+  const [query, setQuery] = useState("");
+  const [onlyActive, setOnlyActive] = useState(false);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["routes", effectiveAgency],
+    queryFn: () =>
+      apiJson<{ agencyId: string; staticVersionId: string | null; routes: RouteRow[] }>(
+        `/api/v1/agencies/${effectiveAgency}/routes`
+      ),
+    staleTime: 30_000,
+  });
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (data?.routes ?? []).filter((r) => {
+      if (onlyActive && r.activeVehicles === 0) return false;
+      if (!q) return true;
+      return (
+        r.shortName.toLowerCase().includes(q) ||
+        r.longName.toLowerCase().includes(q) ||
+        r.routeId.toLowerCase().includes(q)
+      );
+    });
+  }, [data, query, onlyActive]);
+
+  return (
+    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+            {effectiveAgency.toUpperCase()} Network
+          </div>
+          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Routes</h1>
+          <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
+            {data?.staticVersionId
+              ? `Active static GTFS version ${data.staticVersionId} · ${filtered.length} routes shown`
+              : `${filtered.length} live-observed routes (import static GTFS in Admin for full route shapes & timetables)`}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter route # or name…"
+            aria-label="Filter routes"
+            className="sh-input w-56"
+          />
+          <button
+            type="button"
+            onClick={() => setOnlyActive((a) => !a)}
+            className={`sh-btn ${onlyActive ? "sh-btn-primary" : ""}`}
+          >
+            {onlyActive ? "Active Only ✓" : "Active Only"}
+          </button>
+        </div>
+      </div>
+
+      {isLoading && <p className="text-sm" style={{ color: "var(--text-muted)" }}>Loading routes…</p>}
+      {error && <p className="text-sm" style={{ color: "var(--status-err)" }}>{(error as Error).message}</p>}
+
+      <div className="sh-table-wrap">
+        <table className="sh-table">
+          <thead>
+            <tr>
+              <th>Route</th>
+              <th>Corridor / Name</th>
+              <th>Live Fleet</th>
+              <th>Alerts</th>
+              <th>Provenance</th>
+              <th className="text-right">Explore</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="py-8 text-center" style={{ color: "var(--text-muted)" }}>
+                  No routes match your filter right now.
+                </td>
+              </tr>
+            ) : (
+              filtered.map((r) => (
+                <tr key={r.routeId}>
+                  <td className="w-24">
+                    <Link
+                      to={`/routes/${effectiveAgency}/${encodeURIComponent(r.routeId)}`}
+                      className="no-underline hover:no-underline"
+                    >
+                      <span
+                        className="sh-route-shield text-white"
+                        style={{ backgroundColor: r.color || "#B91C1C" }}
+                      >
+                        {r.shortName}
+                      </span>
+                    </Link>
+                  </td>
+                  <td>
+                    <Link
+                      to={`/routes/${effectiveAgency}/${encodeURIComponent(r.routeId)}`}
+                      className="font-semibold text-[var(--text)] hover:text-[var(--primary)]"
+                    >
+                      {r.longName}
+                    </Link>
+                  </td>
+                  <td>
+                    {r.activeVehicles > 0 ? (
+                      <span className="sh-pill sh-pill-ok tabular-nums">
+                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                        {r.activeVehicles} active
+                      </span>
+                    ) : (
+                      <span className="sh-pill sh-pill-muted tabular-nums">0 active</span>
+                    )}
+                  </td>
+                  <td>
+                    {r.activeAlerts > 0 ? (
+                      <span className="sh-pill sh-pill-warn">
+                        <AlertTriangle size={11} /> {r.activeAlerts}
+                      </span>
+                    ) : (
+                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>None</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className="sh-pill sh-pill-muted">{r.source}</span>
+                  </td>
+                  <td className="text-right whitespace-nowrap space-x-3 text-xs font-semibold">
+                    <Link to={`/?route=${encodeURIComponent(r.routeId)}`}>Map</Link>
+                    <Link to={`/history?agency=${effectiveAgency}&route=${encodeURIComponent(r.routeId)}`}>
+                      History
+                    </Link>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export function RouteDetailPage() {
+  const { agencyId = "guelph", routeId = "" } = useParams();
+  const { units, isFavorite, toggleFavorite } = usePreferences();
+  const [selectedDir, setSelectedDir] = useState<string>("all");
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["route-detail", agencyId, routeId],
+    queryFn: () =>
+      apiJson<{
+        agencyId: string;
+        route: {
+          routeId: string;
+          shortName: string;
+          longName: string;
+          color: string | null;
+          directions: Array<{ directionId: number; headsign: string }>;
+          shapeGeoJson: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+          geometrySource: string;
+        };
+        activeVehicles: LiveVehicle[];
+        stops: Array<{ stop_id: string; stop_code: string | null; name: string; lat: number; lon: number; stop_sequence: number }>;
+        trips: Array<{ trip_id: string; direction_id: number | null; headsign: string | null; block_id: string | null }>;
+        alerts: Array<{ id: string; header_text: string; description_text: string; effect: string }>;
+        performance: {
+          liveAdherence: {
+            sampleCount: number;
+            onTimeRate: number | null;
+            meanDelaySec: number | null;
+            medianDelaySec: number | null;
+          };
+        };
+      }>(`/api/v1/agencies/${agencyId}/routes/${encodeURIComponent(routeId)}`),
+    refetchInterval: 25_000,
+  });
+
+  if (isLoading) return <div className="max-w-6xl mx-auto p-6 text-sm">Loading route…</div>;
+  if (error || !data) {
+    return (
+      <div className="max-w-6xl mx-auto p-6 text-sm" style={{ color: "var(--status-err)" }}>
+        Failed to load route: {(error as Error)?.message ?? "Not found"}
+      </div>
+    );
+  }
+
+  const center: [number, number] =
+    data.activeVehicles[0]
+      ? [data.activeVehicles[0].lon, data.activeVehicles[0].lat]
+      : data.stops[0]
+        ? [data.stops[0].lon, data.stops[0].lat]
+        : [-79.3832, 43.6532];
+
+  const filteredTrips =
+    selectedDir === "all"
+      ? data.trips
+      : data.trips.filter((t) => String(t.direction_id ?? "") === selectedDir);
+
+  const fav = isFavorite(agencyId, "route", routeId);
+
+  return (
+    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+            <Link to="/routes">Routes</Link> / {agencyId}
+          </div>
+          <div className="flex items-center gap-3">
+            <span
+              className="sh-route-shield text-white text-base px-3 py-1"
+              style={{ backgroundColor: data.route.color || "#B91C1C" }}
+            >
+              {data.route.shortName}
+            </span>
+            <h1 className="text-2xl font-extrabold tracking-tight m-0">{data.route.longName}</h1>
+          </div>
+          <div className="text-xs flex flex-wrap gap-3 pt-0.5" style={{ color: "var(--text-muted)" }}>
+            <span>Geometry: <strong>{data.route.geometrySource}</strong></span>
+            <span>Active vehicles: <strong className="tabular-nums">{data.activeVehicles.length}</strong></span>
+            {data.performance.liveAdherence.sampleCount > 0 && (
+              <span>
+                Live adherence:{" "}
+                <strong className="tabular-nums">
+                  {Math.round((data.performance.liveAdherence.onTimeRate ?? 0) * 100)}% on-time
+                </strong>{" "}
+                (n={data.performance.liveAdherence.sampleCount})
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="sh-btn"
+            onClick={() =>
+              toggleFavorite({
+                agencyId,
+                entityType: "route",
+                entityId: routeId,
+                label: `${agencyId.toUpperCase()} Route ${data.route.shortName}`,
+              })
+            }
+          >
+            <Star size={14} fill={fav ? "currentColor" : "none"} />
+            {fav ? "Favorited" : "Favorite"}
+          </button>
+          <Link to={`/history?agency=${agencyId}&route=${encodeURIComponent(routeId)}`} className="sh-btn sh-btn-primary">
+            <HistoryIcon size={14} /> History &amp; Export
+          </Link>
+        </div>
+      </div>
+
+      {data.alerts.length > 0 && (
+        <div className="space-y-2">
+          {data.alerts.map((a) => (
+            <div
+              key={a.id}
+              className="sh-card p-3.5 text-sm flex items-start gap-2.5"
+              style={{ background: "var(--gold-surface)" }}
+            >
+              <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold">{a.header_text}</div>
+                {a.description_text && <p className="m-0 mt-1 text-xs">{a.description_text}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <TransitMap
+        center={center}
+        zoom={12.5}
+        vehicles={data.activeVehicles}
+        selectedVehicleId={null}
+        routeShape={data.route.shapeGeoJson}
+        stops={data.stops}
+        heightClass="h-[44vh] min-h-[320px]"
+      />
+
+      <section className="space-y-2.5">
+        <h2 className="text-base font-bold m-0">Active Vehicles ({data.activeVehicles.length})</h2>
+        <div className="sh-table-wrap">
+          <table className="sh-table">
+            <thead>
+              <tr>
+                <th>Fleet #</th>
+                <th>Trip</th>
+                <th>Speed</th>
+                <th>Deviation</th>
+                <th>Age</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.activeVehicles.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ color: "var(--text-muted)" }}>
+                    No vehicles currently reporting on this route.
+                  </td>
+                </tr>
+              ) : (
+                data.activeVehicles.map((v) => {
+                  const d = formatDelay(v.scheduleDeviationSec);
+                  return (
+                    <tr key={v.sourceVehicleId}>
+                      <td className="font-bold tabular-nums">
+                        <Link to={`/vehicles/${agencyId}/${encodeURIComponent(v.vehicleId)}`} className="inline-flex items-center gap-1">
+                          #{v.fleetNumber} <ArrowUpRight size={12} />
+                        </Link>
+                      </td>
+                      <td className="font-mono text-xs">
+                        {v.tripId ? (
+                          <Link to={`/trips/${agencyId}/${encodeURIComponent(v.tripId)}`}>{v.tripId}</Link>
+                        ) : (
+                          "Unassigned"
+                        )}
+                      </td>
+                      <td className="tabular-nums">{formatSpeed(v.speedMps, units)}</td>
+                      <td>
+                        <span className={`sh-pill sh-pill-${d.tone}`}>{d.text}</span>
+                      </td>
+                      <td className="tabular-nums text-xs" style={{ color: "var(--text-muted)" }}>
+                        {v.ageSeconds}s
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {data.stops.length > 0 && (
+        <section className="space-y-2.5">
+          <h2 className="text-base font-bold m-0 flex items-center gap-2">
+            <MapPin size={16} /> Stops ({data.stops.length})
+          </h2>
+          <div className="sh-table-wrap max-h-96 overflow-y-auto">
+            <table className="sh-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Code</th>
+                  <th>Stop Name</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.stops.map((s) => (
+                  <tr key={`${s.stop_sequence}-${s.stop_id}`}>
+                    <td className="tabular-nums text-xs" style={{ color: "var(--text-muted)" }}>
+                      {s.stop_sequence}
+                    </td>
+                    <td className="font-mono text-xs">{s.stop_code ?? s.stop_id}</td>
+                    <td className="font-medium">
+                      <Link to={`/stops/${agencyId}/${encodeURIComponent(s.stop_id)}`}>{s.name}</Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {data.trips.length > 0 && (
+        <section className="space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-base font-bold m-0">Scheduled Trips ({filteredTrips.length})</h2>
+            {data.route.directions.length > 0 && (
+              <select
+                value={selectedDir}
+                onChange={(e) => setSelectedDir(e.target.value)}
+                className="sh-input text-xs"
+                aria-label="Filter direction"
+              >
+                <option value="all">All directions</option>
+                {data.route.directions.map((d) => (
+                  <option key={d.directionId} value={String(d.directionId)}>
+                    Direction {d.directionId}: {d.headsign}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div className="sh-table-wrap max-h-80 overflow-y-auto">
+            <table className="sh-table">
+              <thead>
+                <tr>
+                  <th>Trip ID</th>
+                  <th>Headsign</th>
+                  <th>Block</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTrips.slice(0, 40).map((t) => (
+                  <tr key={t.trip_id}>
+                    <td className="font-mono text-xs">
+                      <Link to={`/trips/${agencyId}/${encodeURIComponent(t.trip_id)}`}>{t.trip_id}</Link>
+                    </td>
+                    <td>{t.headsign ?? "—"}</td>
+                    <td className="font-mono text-xs">
+                      {t.block_id ? (
+                        <Link to={`/blocks/${agencyId}/${encodeURIComponent(t.block_id)}`}>{t.block_id}</Link>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}

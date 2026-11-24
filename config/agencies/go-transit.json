@@ -1,0 +1,66 @@
+{
+  "id": "go",
+  "name": "GO Transit",
+  "shortName": "GO",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["rail", "bus"],
+  "center": [-79.3807, 43.6452],
+  "defaultZoom": 9.8,
+  "enabled": true,
+  "attribution": "Data provided by Metrolinx Open Data (GO Transit). Subject to Metrolinx Open Data Terms of Use.",
+  "licenseUrl": "https://www.metrolinx.com/en/about-us/open-data",
+  "archivePolicy": "permitted_with_key",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "go-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "go-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://api.openmetrolinx.com/OpenDataAPI/api/V1/Gtfs.proto/Feed/VehiclePosition",
+      "authQueryParam": "key",
+      "authSecretRef": "GO_TRANSIT_API_KEY",
+      "refreshSeconds": 60,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "go-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://api.openmetrolinx.com/OpenDataAPI/api/V1/Gtfs.proto/Feed/TripUpdates",
+      "authQueryParam": "key",
+      "authSecretRef": "GO_TRANSIT_API_KEY",
+      "refreshSeconds": 60,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "go-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://api.openmetrolinx.com/OpenDataAPI/api/V1/Gtfs.proto/Feed/Alerts",
+      "authQueryParam": "key",
+      "authSecretRef": "GO_TRANSIT_API_KEY",
+      "refreshSeconds": 180,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

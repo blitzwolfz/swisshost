@@ -1,0 +1,15 @@
+{
+  "name": "@swisshost/analytics",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@swisshost/contracts": "workspace:*",
+    "@swisshost/transit-core": "workspace:*"
+  }
+}

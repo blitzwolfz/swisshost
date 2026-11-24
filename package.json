@@ -1,23 +1,30 @@
 {
   "name": "swisshost",
-  "private": true,
   "version": "1.0.0",
+  "private": true,
   "type": "module",
-  "description": "Peer-to-peer, end-to-end-encrypted file-sharing and chat.",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "worker:dev": "wrangler dev --config worker/wrangler.toml",
-    "worker:deploy": "wrangler deploy --config worker/wrangler.toml"
+    "dev": "pnpm --filter @swisshost/web dev",
+    "dev:worker": "wrangler dev",
+    "build": "pnpm --filter @swisshost/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply swisshost-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply swisshost-db --remote",
+    "deploy": "pnpm build && wrangler deploy",
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "fflate": "^0.8.2",
+    "hono": "^4.7.6",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^5.4.11",
-    "wrangler": "^3.90.0"
+    "@cloudflare/workers-types": "^4.20250409.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1",
+    "wrangler": "^4.10.0"
   }
 }

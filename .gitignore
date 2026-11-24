@@ -1,27 +1,10 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
 .wrangler/
-
-# Env / secrets
+.pnpm-store/
 .dev.vars
 .env
 .env.local
-.env.*.local
-
-# Logs
-*.log
-npm-debug.log*
-
-# Tooling / assistant config (not part of the app)
-.claude/
-
-# Editors
-.vscode/
-.idea/
-
-# OS cruft
+coverage/
+*.tsbuildinfo
 .DS_Store
-Thumbs.db
