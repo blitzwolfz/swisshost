@@ -21,6 +21,10 @@ interface PreferencesContextValue {
   setUnits: (u: UnitSystem) => void;
   interpolate: boolean;
   setInterpolate: (v: boolean) => void;
+  showWeather: boolean;
+  setShowWeather: (v: boolean) => void;
+  showWeatherRadar: boolean;
+  setShowWeatherRadar: (v: boolean) => void;
   favorites: LocalFavorite[];
   toggleFavorite: (fav: Omit<LocalFavorite, "addedAt">) => void;
   isFavorite: (agencyId: string, entityType: LocalFavorite["entityType"], entityId: string) => boolean;
@@ -43,6 +47,14 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const saved = localStorage.getItem("swisshost_interpolate");
     return saved !== null ? saved === "true" : !reduced;
+  });
+  const [showWeather, setShowWeatherState] = useState<boolean>(() => {
+    const saved = localStorage.getItem("swisshost_show_weather");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [showWeatherRadar, setShowWeatherRadarState] = useState<boolean>(() => {
+    const saved = localStorage.getItem("swisshost_show_weather_radar");
+    return saved === "true";
   });
   const [favorites, setFavorites] = useState<LocalFavorite[]>(() => {
     try {
@@ -101,6 +113,14 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     setInterpolateState(v);
     localStorage.setItem("swisshost_interpolate", String(v));
   };
+  const setShowWeather = (v: boolean) => {
+    setShowWeatherState(v);
+    localStorage.setItem("swisshost_show_weather", String(v));
+  };
+  const setShowWeatherRadar = (v: boolean) => {
+    setShowWeatherRadarState(v);
+    localStorage.setItem("swisshost_show_weather_radar", String(v));
+  };
 
   const toggleFavorite = (fav: Omit<LocalFavorite, "addedAt">) => {
     setFavorites((prev) => {
@@ -142,6 +162,10 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         setUnits,
         interpolate,
         setInterpolate,
+        showWeather,
+        setShowWeather,
+        showWeatherRadar,
+        setShowWeatherRadar,
         favorites,
         toggleFavorite,
         isFavorite,

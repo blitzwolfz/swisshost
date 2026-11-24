@@ -26,9 +26,12 @@ import {
   haversineMeters,
   inferVehicleMode,
   isRailMode,
+  parseEcccCityPageWeather,
+  resolveEcccSiteId,
   type PlanRoutePattern,
   type PlanScheduledDepartureInput,
   type PlannedUpcomingBus,
+  type WeatherSnapshot,
 } from "@swisshost/transit-core";
 import { createAdminApp } from "../../admin/src/index";
 import { FeedSchedulerDO } from "../../collector/src/feed-scheduler-do";
@@ -341,6 +344,100 @@ app.get("/api/v1/rail-corridors", (c) => {
     agencyId: agency,
     corridors: getRailCorridorsForAgency(agency),
   });
+});
+
+// ---------------------------------------------------------------------------
+// Environment and Climate Change Canada (ECCC) Weather Proxy (Edge-Cached)
+// Free, keyless official MSC GeoMet API; cached by hub to minimize worker/upstream cost
+// ---------------------------------------------------------------------------
+const weatherMemCache = new Map<string, { data: WeatherSnapshot; fetchedAt: number }>();
+const WEATHER_MEM_TTL_MS = 5 * 60_000;
+
+app.get("/api/v1/weather", async (c) => {
+  const agency = c.req.query("agency") || undefined;
+  const latRaw = c.req.query("lat");
+  const lonRaw = c.req.query("lon");
+  const lat = latRaw !== undefined ? Number(latRaw) : null;
+  const lon = lonRaw !== undefined ? Number(lonRaw) : null;
+
+  const hub = resolveEcccSiteId({
+    agencyId: agency,
+    lat: lat !== null && Number.isFinite(lat) ? lat : null,
+    lon: lon !== null && Number.isFinite(lon) ? lon : null,
+  });
+
+  // 1. Cloudflare Edge Cache keyed strictly by ECCC siteId so TTC, GO, and nearby coords share 1 entry
+  const cache = (caches as unknown as { default?: Cache }).default;
+  const edgeCacheKey = new Request(`https://weather-cache.swisshost.internal/eccc/${hub.siteId}`, {
+    method: "GET",
+  });
+  if (cache) {
+    const hit = await cache.match(edgeCacheKey);
+    if (hit) {
+      const res = new Response(hit.body, hit);
+      res.headers.set("X-Swisshost-Cache", "HIT");
+      return res;
+    }
+  }
+
+  // 2. Isolate in-memory cache fallback (zero upstream calls within 5 min)
+  const mem = weatherMemCache.get(hub.siteId);
+  if (mem && Date.now() - mem.fetchedAt < WEATHER_MEM_TTL_MS) {
+    c.header("Cache-Control", "public, max-age=300, s-maxage=600, stale-while-revalidate=600");
+    c.header("X-Swisshost-Cache", "MEM");
+    return c.json(mem.data);
+  }
+
+  const upstreamUrl = `https://api.weather.gc.ca/collections/citypageweather-realtime/items/${encodeURIComponent(hub.siteId)}?f=json`;
+  try {
+    const upstream = await fetch(upstreamUrl, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Swisshost/1.0 (+https://swisshost.cc)",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!upstream.ok) {
+      throw new Error(`ECCC returned HTTP ${upstream.status}`);
+    }
+
+    const raw = (await upstream.json()) as unknown;
+    const parsed = parseEcccCityPageWeather(raw, hub);
+    weatherMemCache.set(hub.siteId, { data: parsed, fetchedAt: Date.now() });
+
+    const body = JSON.stringify(parsed);
+    const headers = {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "public, max-age=300, s-maxage=600, stale-while-revalidate=600",
+      "X-Swisshost-Cache": "MISS",
+    };
+
+    if (cache) {
+      c.executionCtx.waitUntil(
+        cache.put(edgeCacheKey, new Response(body, { status: 200, headers })).catch(() => undefined)
+      );
+    }
+
+    return new Response(body, { status: 200, headers });
+  } catch (err) {
+    // Graceful stale fallback if ECCC hiccups
+    if (mem) {
+      c.header("Cache-Control", "public, max-age=60");
+      c.header("X-Swisshost-Cache", "STALE");
+      return c.json({ ...mem.data, stale: true });
+    }
+    return c.json(
+      createProblemDetails(
+        502,
+        "Weather feed unavailable",
+        err instanceof Error ? err.message : "Could not reach Environment Canada weather service.",
+        c.get("requestId"),
+        c.req.path
+      ),
+      502
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

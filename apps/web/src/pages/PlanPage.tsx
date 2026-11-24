@@ -4,9 +4,12 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowDownUp, ArrowRight, Bus, Clock, Footprints, LocateFixed, RefreshCw, X } from "lucide-react";
 import { apiJson, formatClock } from "../lib/api";
 import { useUserLocation } from "../hooks/useUserLocation";
+import { useWeather } from "../hooks/useWeather";
+import { usePreferences } from "../lib/preferences";
 import { agencyShortName } from "../lib/agencies";
 import { routeColor } from "../lib/routeColors";
 import { EmptyState, LiveLegend, RouteBadge } from "../components/Transit";
+import { TripWeatherNote } from "../components/Weather";
 
 interface GeoChoice {
   id: string;
@@ -214,6 +217,7 @@ function PlaceField({
 export default function PlanPage() {
   const [searchParams] = useSearchParams();
   const { locateOnce, error: gpsError } = useUserLocation();
+  const { agencyId, showWeather, setShowWeather } = usePreferences();
 
   const [origin, setOrigin] = useState<GeoChoice | null>(() => {
     const lat = Number(searchParams.get("fromLat"));
@@ -262,6 +266,12 @@ export default function PlanPage() {
     timeMode === "custom" && customTime && !Number.isNaN(Date.parse(customTime))
       ? new Date(customTime).toISOString()
       : null;
+
+  const { data: weatherData } = useWeather({
+    lat: origin?.lat ?? null,
+    lon: origin?.lon ?? null,
+    agencyId: origin ? null : agencyId,
+  });
 
   const useMyLocation = async () => {
     setLocating(true);
@@ -390,19 +400,28 @@ export default function PlanPage() {
             )}
           </div>
 
-          {origin && dest && (
-            <button
-              type="button"
-              className="sh-btn"
-              onClick={() => void refetch()}
-              disabled={isFetching}
-            >
-              <RefreshCw size={16} aria-hidden="true" className={isFetching ? "animate-spin" : ""} />
-              Refresh times
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {!showWeather && (
+              <button type="button" className="sh-btn text-xs" onClick={() => setShowWeather(true)}>
+                Show weather
+              </button>
+            )}
+            {origin && dest && (
+              <button
+                type="button"
+                className="sh-btn"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+              >
+                <RefreshCw size={16} aria-hidden="true" className={isFetching ? "animate-spin" : ""} />
+                Refresh times
+              </button>
+            )}
+          </div>
         </div>
       </section>
+
+      <TripWeatherNote weather={weatherData} departAtIso={departAtIso ?? clockNow.toISOString()} />
 
       {!origin || !dest ? (
         <EmptyState>

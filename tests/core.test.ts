@@ -17,13 +17,16 @@ import {
   detectStopEvent,
   evaluateTripMatch,
   findRailPlanCandidates,
+  findWeatherForTripWindow,
   generateScheduledRailVehicles,
   getLocalServiceContext,
   getScheduledRailRideTimeline,
   inferVehicleMode,
   isServiceActiveOnDate,
+  parseEcccCityPageWeather,
   parseGtfsTimeToSeconds,
   projectPointOntoPolyline,
+  resolveEcccSiteId,
   validateObservationQuality,
 } from "@swisshost/transit-core";
 import {
@@ -504,5 +507,106 @@ describe("Rail Networks — TTC Subway & GO Transit Trains", () => {
     expect(kitchener).toBeDefined();
     expect(kitchener!.headsign).toBe("Union Station");
     expect(kitchener!.upcomingDepartures.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Weather — Environment and Climate Change Canada (ECCC) Parser", () => {
+  it("maps Ontario agencies and coordinates to verified ECCC hub siteIds", () => {
+    expect(resolveEcccSiteId({ agencyId: "ttc" }).siteId).toBe("on-143");
+    expect(resolveEcccSiteId({ agencyId: "go" }).siteId).toBe("on-143");
+    expect(resolveEcccSiteId({ agencyId: "guelph" }).siteId).toBe("on-5");
+    expect(resolveEcccSiteId({ agencyId: "thunderbay" }).siteId).toBe("on-100");
+    // Coords near Guelph Central GO should pick Guelph (on-5)
+    expect(resolveEcccSiteId({ lat: 43.5446, lon: -80.2465 }).siteId).toBe("on-5");
+    // Coords near Thunder Bay should pick Thunder Bay (on-100)
+    expect(resolveEcccSiteId({ lat: 48.381, lon: -89.247 }).siteId).toBe("on-100");
+  });
+
+  it("parses ECCC GeoJSON, falls back for automated stations, filters ended alerts, and picks trip-window forecast", () => {
+    const sample = {
+      type: "Feature",
+      properties: {
+        identifier: "on-5",
+        lastUpdated: "2026-11-24T19:02:25Z",
+        name: { en: "Guelph", fr: "Guelph" },
+        region: { en: "Guelph", fr: "Guelph" },
+        url: { en: "https://weather.gc.ca/en/location/index.html?coords=43.55,-80.25" },
+        currentConditions: {
+          timestamp: { en: "2026-11-24T19:00:00Z" },
+          temperature: { value: { en: -0.5 } },
+          windChill: { value: { en: -6 } },
+          relativeHumidity: { value: { en: 62 } },
+          wind: {
+            speed: { value: { en: 18 } },
+            gust: { value: { en: 32 } },
+            direction: { value: { en: "WNW" } },
+          },
+          station: { value: { en: "Guelph Turfgrass Institute" } },
+          // Automated station omits condition & iconCode
+        },
+        warnings: [
+          {
+            type: { en: "warning" },
+            alertColourLevel: { en: "yellow" },
+            description: { en: "SNOW SQUALL WARNING" },
+            expiryTime: { en: "2026-11-25T03:00:00Z" },
+          },
+          {
+            type: { en: "statement" },
+            description: { en: "SPECIAL WEATHER STATEMENT ENDED" },
+            status: { en: "ended" },
+          },
+        ],
+        hourlyForecastGroup: {
+          hourlyForecasts: [
+            {
+              timestamp: "2026-11-24T20:00:00Z",
+              condition: { en: "Flurries" },
+              temperature: { value: { en: -1 } },
+              windChill: { value: { en: -7 } },
+              iconCode: { value: 16 },
+              lop: { value: { en: 70 } },
+              wind: { speed: { value: { en: 20 } }, direction: { value: { en: "NW" } } },
+            },
+            {
+              timestamp: "2026-11-24T22:00:00Z",
+              condition: { en: "Snow" },
+              temperature: { value: { en: -3 } },
+              windChill: { value: { en: -10 } },
+              iconCode: { value: 17 },
+              lop: { value: { en: 80 } },
+              wind: { speed: { value: { en: 25 } }, direction: { value: { en: "NW" } } },
+            },
+          ],
+        },
+        forecastGroup: {
+          forecasts: [{ textSummary: { en: "Flurries ending late this evening." } }],
+        },
+      },
+    };
+
+    const parsed = parseEcccCityPageWeather(sample);
+    expect(parsed.siteId).toBe("on-5");
+    expect(parsed.cityName).toBe("Guelph");
+    expect(parsed.current.tempC).toBe(-0.5);
+    expect(parsed.current.feelsLikeC).toBe(-6);
+    expect(parsed.current.feelsLikeType).toBe("wind_chill");
+    // Fallback to hourly[0] when automated station omits condition & iconCode
+    expect(parsed.current.condition).toBe("Flurries");
+    expect(parsed.current.iconCode).toBe(16);
+    // Active warning kept; ended statement excluded
+    expect(parsed.alerts).toHaveLength(1);
+    expect(parsed.alerts[0]!.title).toBe("SNOW SQUALL WARNING");
+    expect(parsed.alerts[0]!.colourLevel).toBe("yellow");
+
+    const futureTrip = findWeatherForTripWindow(
+      parsed,
+      "2026-11-24T22:05:00Z",
+      Date.parse("2026-11-24T19:15:00Z")
+    );
+    expect(futureTrip.isForecast).toBe(true);
+    expect(futureTrip.tempC).toBe(-3);
+    expect(futureTrip.precipChancePct).toBe(80);
+    expect(futureTrip.advisoryNote).toContain("Snow");
   });
 });

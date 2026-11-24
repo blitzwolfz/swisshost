@@ -63,8 +63,22 @@ function AgencySwitcher({
 }
 
 export function Layout() {
-  const { agencyId, setAgencyId, theme, setTheme, units, setUnits, interpolate, setInterpolate, favorites, online } =
-    usePreferences();
+  const {
+    agencyId,
+    setAgencyId,
+    theme,
+    setTheme,
+    units,
+    setUnits,
+    interpolate,
+    setInterpolate,
+    showWeather,
+    setShowWeather,
+    showWeatherRadar,
+    setShowWeatherRadar,
+    favorites,
+    online,
+  } = usePreferences();
   const { isStandalone } = usePwaInstall();
   const [searchText, setSearchText] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -423,6 +437,28 @@ export function Layout() {
                   Move vehicles smoothly between updates
                 </label>
 
+                <fieldset className="m-0 p-0 border-0 space-y-1">
+                  <legend className="font-bold mb-1">Weather (Environment Canada)</legend>
+                  <label className="flex items-center gap-3 cursor-pointer min-h-[38px]">
+                    <input
+                      type="checkbox"
+                      checked={showWeather}
+                      onChange={(e) => setShowWeather(e.target.checked)}
+                      className="w-5 h-5"
+                    />
+                    Show conditions, alerts &amp; trip weather
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer min-h-[38px]">
+                    <input
+                      type="checkbox"
+                      checked={showWeatherRadar}
+                      onChange={(e) => setShowWeatherRadar(e.target.checked)}
+                      className="w-5 h-5"
+                    />
+                    Show live rain &amp; snow radar on map
+                  </label>
+                </fieldset>
+
                 <nav
                   aria-label="More"
                   className="grid grid-cols-2 gap-x-4 gap-y-3 pt-3"
@@ -478,6 +514,14 @@ export function Layout() {
                       </a>
                     </>
                   )}
+                </p>
+              )}
+              {(showWeather || showWeatherRadar) && (
+                <p className="m-0 sh-muted">
+                  Weather &amp; radar provided by Environment and Climate Change Canada (MSC GeoMet).{" "}
+                  <a href="https://weather.gc.ca/" target="_blank" rel="noreferrer">
+                    weather.gc.ca
+                  </a>
                 </p>
               )}
             </div>

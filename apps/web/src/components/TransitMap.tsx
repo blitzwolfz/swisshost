@@ -35,6 +35,8 @@ interface TransitMapProps {
   followSelected?: boolean;
   /** How vehicles are labelled on the map: line number (default), line + fleet #, or vehicle icons only. */
   labelMode?: MapLabelMode;
+  /** Overlay Environment Canada (ECCC) 1 km live rain & snow precipitation radar beneath transit layers. */
+  showWeatherRadar?: boolean;
   /** Pixels hidden by an overlay at the bottom (e.g. a sheet); centring accounts for it. */
   bottomInset?: number;
   heightClass?: string;
@@ -467,6 +469,7 @@ export function TransitMap({
   onSelectStop,
   followSelected = false,
   labelMode = "line",
+  showWeatherRadar = false,
   bottomInset = 0,
   heightClass = "h-[65vh] min-h-[420px]",
   rounded = true,
@@ -1145,6 +1148,61 @@ export function TransitMap({
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stops, selectedStopId, resolvedTheme]
+  );
+
+  useEffect(
+    () =>
+      whenReady("rail-corridors", () => {
+        const map = mapRef.current!;
+        const radarLayers = [
+          { id: "eccc-radar-rain", wmsLayer: "RADAR_1KM_RRAI" },
+          { id: "eccc-radar-snow", wmsLayer: "RADAR_1KM_RSNO" },
+        ] as const;
+
+        if (!showWeatherRadar) {
+          for (const rl of radarLayers) {
+            if (map.getLayer(rl.id)) {
+              map.setLayoutProperty(rl.id, "visibility", "none");
+            }
+          }
+          return;
+        }
+
+        const opacity = resolvedTheme === "dark" ? 0.48 : 0.58;
+        const beforeId = map.getLayer("rail-corridors-casing") ? "rail-corridors-casing" : undefined;
+
+        for (const rl of radarLayers) {
+          if (!map.getSource(rl.id)) {
+            map.addSource(rl.id, {
+              type: "raster",
+              tiles: [
+                `https://geo.weather.gc.ca/geomet?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=${rl.wmsLayer}&CRS=EPSG:3857&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&FORMAT=image/png&TRANSPARENT=true&INTERPOLATION=TRUE`,
+              ],
+              tileSize: 256,
+              attribution: "Radar: Environment and Climate Change Canada",
+            });
+          }
+          if (!map.getLayer(rl.id)) {
+            map.addLayer(
+              {
+                id: rl.id,
+                type: "raster",
+                source: rl.id,
+                paint: {
+                  "raster-opacity": opacity,
+                  "raster-fade-duration": 200,
+                },
+              },
+              beforeId
+            );
+          } else {
+            map.setLayoutProperty(rl.id, "visibility", "visible");
+            map.setPaintProperty(rl.id, "raster-opacity", opacity);
+          }
+        }
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showWeatherRadar, resolvedTheme]
   );
 
   useEffect(

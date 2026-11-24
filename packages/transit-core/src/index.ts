@@ -359,6 +359,18 @@ export {
   type RailStation,
 } from "./rail-networks";
 
+export {
+  ECCC_ONTARIO_HUBS,
+  findWeatherForTripWindow,
+  parseEcccCityPageWeather,
+  resolveEcccSiteId,
+  type EcccCityHub,
+  type HourlyWeatherPoint,
+  type TripWindowWeather,
+  type WeatherAlert,
+  type WeatherSnapshot,
+} from "./weather";
+
 export function resolveFleetNumber(
   sourceVehicleId: string,
   label: string | null

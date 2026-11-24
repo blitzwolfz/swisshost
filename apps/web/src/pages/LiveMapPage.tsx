@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bell,
+  CloudRain,
   Crosshair,
   History as HistoryIcon,
   List,
@@ -14,8 +15,10 @@ import {
 import { TransitMap, type MapLabelMode } from "../components/TransitMap";
 import { BottomSheet } from "../components/BottomSheet";
 import { DepartureRow, EmptyState, LiveLegend, RouteBadge, vehicleNounFor } from "../components/Transit";
+import { WeatherAlertBanner, WeatherGlyph, WeatherMapChip } from "../components/Weather";
 import { useLiveAgency } from "../hooks/useLiveAgency";
 import { useUserLocation } from "../hooks/useUserLocation";
+import { useWeather } from "../hooks/useWeather";
 import {
   apiJson,
   formatClock,
@@ -23,6 +26,7 @@ import {
   formatDelay,
   formatRelativeAge,
   formatSpeed,
+  formatTemperature,
   formatVehicleStatusLine,
   isTrainMode,
   vehicleModeNoun,
@@ -65,8 +69,19 @@ function useIsDesktop() {
 }
 
 export default function LiveMapPage() {
-  const { agencyId, setAgencyId, units, isFavorite, toggleFavorite } = usePreferences();
+  const {
+    agencyId,
+    setAgencyId,
+    units,
+    showWeather,
+    setShowWeather,
+    showWeatherRadar,
+    setShowWeatherRadar,
+    isFavorite,
+    toggleFavorite,
+  } = usePreferences();
   const isDesktop = useIsDesktop();
+  const { data: weatherData } = useWeather({ agencyId });
   const [searchParams, setSearchParams] = useSearchParams();
   const routeFilter = searchParams.get("route") || "";
   const selectedId = searchParams.get("vehicle") || null;
@@ -452,6 +467,8 @@ export default function LiveMapPage() {
 
   const notices = (
     <>
+      <WeatherAlertBanner weather={weatherData} compact />
+
       {gpsError && (
         <p className="m-0 text-sm font-bold" style={{ color: "var(--danger)" }} role="alert">
           {gpsError}
@@ -921,13 +938,14 @@ export default function LiveMapPage() {
       userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
       followSelected={followSelected}
       labelMode={labelMode}
+      showWeatherRadar={showWeatherRadar}
       heightClass="h-full w-full"
       rounded={false}
     />
   );
 
   const countChip = (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <div className="sh-chip" role="status" aria-live="polite">
         <b>{liveCount}</b>
         <span className="leading-tight">
@@ -955,8 +973,47 @@ export default function LiveMapPage() {
           </button>
         ))}
       </div>
+      <WeatherMapChip weather={weatherData} />
+      <button
+        type="button"
+        aria-pressed={showWeatherRadar}
+        onClick={() => setShowWeatherRadar(!showWeatherRadar)}
+        title={showWeatherRadar ? "Hide Environment Canada precipitation radar" : "Show Environment Canada live rain & snow radar"}
+        className={`sh-btn text-xs ${showWeatherRadar ? "sh-btn-primary" : ""}`}
+        style={{ minHeight: 44, background: showWeatherRadar ? "var(--accent)" : "var(--paper)" }}
+      >
+        <CloudRain size={16} aria-hidden="true" />
+        Radar
+      </button>
     </div>
   );
+
+  const radarLegend = showWeatherRadar ? (
+    <div
+      className="sh-panel px-2.5 py-1.5 text-xs flex items-center gap-2.5"
+      role="status"
+      aria-label="Live precipitation radar active"
+    >
+      <span className="inline-flex items-center gap-1.5 font-bold">
+        <CloudRain size={14} aria-hidden="true" />
+        ECCC 1 km radar
+      </span>
+      <span className="inline-flex items-center gap-1 sh-muted">
+        <span className="inline-block w-2.5 h-2.5" style={{ background: "#2563EB" }} aria-hidden="true" /> Rain
+      </span>
+      <span className="inline-flex items-center gap-1 sh-muted">
+        <span className="inline-block w-2.5 h-2.5" style={{ background: "#7C3AED" }} aria-hidden="true" /> Snow
+      </span>
+      <button
+        type="button"
+        onClick={() => setShowWeatherRadar(false)}
+        className="bg-transparent border-0 p-0 underline cursor-pointer text-xs"
+        style={{ color: "var(--accent)", font: "inherit" }}
+      >
+        Off
+      </button>
+    </div>
+  ) : null;
 
   /* ---------- Desktop: fixed 400px panel + map ---------- */
 
@@ -1020,7 +1077,12 @@ export default function LiveMapPage() {
 
         <div className="sh-map-shell relative flex-1 min-w-0 overflow-hidden">
           {map}
-          <div className="absolute top-4 left-4 z-20">{countChip}</div>
+          <div className="absolute top-4 left-4 right-4 z-20 pointer-events-none">
+            <div className="pointer-events-auto inline-block">{countChip}</div>
+          </div>
+          {radarLegend && (
+            <div className="absolute bottom-4 left-4 z-20">{radarLegend}</div>
+          )}
         </div>
       </div>
     );
@@ -1087,13 +1149,44 @@ export default function LiveMapPage() {
           </div>
         </div>
 
-        {(gpsError || (onBoardMode && watching && !activeVehicle) || activeAgency?.liveStatus === "missing_key" || (nothingReporting && !sheetMode)) && (
+        {(gpsError ||
+          (onBoardMode && watching && !activeVehicle) ||
+          activeAgency?.liveStatus === "missing_key" ||
+          (showWeather && (weatherData?.alerts.length ?? 0) > 0) ||
+          (nothingReporting && !sheetMode)) && (
           <div className="sh-panel p-3 space-y-2 pointer-events-auto">
             {notices}
             {!sheetMode && emptyNotice}
           </div>
         )}
+
+        {showWeather && weatherData && !sheetMode && (
+          <div className="pointer-events-auto flex items-center justify-between gap-2">
+            <div
+              className="sh-panel px-2.5 py-1.5 text-xs flex items-center gap-2"
+              aria-label={`Weather in ${weatherData.cityName}`}
+            >
+              <WeatherGlyph iconCode={weatherData.current.iconCode} condition={weatherData.current.condition} size={15} />
+              <b className="tabular-nums">{formatTemperature(weatherData.current.tempC, units)}</b>
+              <span className="truncate max-w-[140px]">{weatherData.current.condition}</span>
+            </div>
+            <button
+              type="button"
+              aria-pressed={showWeatherRadar}
+              onClick={() => setShowWeatherRadar(!showWeatherRadar)}
+              className={`sh-btn text-xs ${showWeatherRadar ? "sh-btn-primary" : ""}`}
+              style={{ minHeight: 34, padding: "0 0.625rem", background: showWeatherRadar ? "var(--accent)" : "var(--paper)" }}
+            >
+              <CloudRain size={14} aria-hidden="true" />
+              Radar
+            </button>
+          </div>
+        )}
       </div>
+
+      {radarLegend && !sheetMode && (
+        <div className="absolute bottom-3 left-2 z-20">{radarLegend}</div>
+      )}
 
       {sheetMode && (
         <BottomSheet
@@ -1121,6 +1214,27 @@ export default function LiveMapPage() {
               <h2 className="m-0 text-xl font-extrabold">Filters</h2>
               {modeSwitcher}
               {filtersForm}
+              <div className="pt-2 space-y-1 text-sm" style={{ borderTop: "1px solid var(--rule)" }}>
+                <div className="font-bold">Weather (Environment Canada)</div>
+                <label className="flex items-center gap-2.5 cursor-pointer min-h-[38px]">
+                  <input
+                    type="checkbox"
+                    checked={showWeather}
+                    onChange={(e) => setShowWeather(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  Show conditions &amp; alerts
+                </label>
+                <label className="flex items-center gap-2.5 cursor-pointer min-h-[38px]">
+                  <input
+                    type="checkbox"
+                    checked={showWeatherRadar}
+                    onChange={(e) => setShowWeatherRadar(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  Show live rain &amp; snow radar
+                </label>
+              </div>
             </div>
           )}
           {sheetMode === "list" && (

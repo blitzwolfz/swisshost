@@ -102,6 +102,68 @@ export function formatSpeed(speedMps: number | null | undefined, units: "metric"
   return `${(speedMps * 3.6).toFixed(1)} km/h`;
 }
 
+export function formatTemperature(tempC: number | null | undefined, units: "metric" | "imperial"): string {
+  if (tempC === null || tempC === undefined || !Number.isFinite(tempC)) return "--";
+  if (units === "imperial") {
+    return `${Math.round((tempC * 9) / 5 + 32)}°F`;
+  }
+  return `${Math.round(tempC)}°C`;
+}
+
+export function formatWindKmh(kmh: number | null | undefined, units: "metric" | "imperial"): string {
+  if (kmh === null || kmh === undefined || !Number.isFinite(kmh)) return "";
+  if (units === "imperial") {
+    return `${Math.round(kmh * 0.621371)} mph`;
+  }
+  return `${Math.round(kmh)} km/h`;
+}
+
+export interface WeatherAlert {
+  id: string;
+  type: "warning" | "watch" | "advisory" | "statement";
+  colourLevel: "red" | "orange" | "yellow" | null;
+  title: string;
+  expiresAt: string | null;
+  url: string | null;
+}
+
+export interface HourlyWeatherPoint {
+  timestamp: string;
+  tempC: number | null;
+  feelsLikeC: number | null;
+  condition: string;
+  iconCode: number | null;
+  precipChancePct: number | null;
+  windSpeedKmh: number | null;
+  windDirection: string | null;
+}
+
+export interface WeatherSnapshot {
+  siteId: string;
+  cityName: string;
+  region: string | null;
+  stationName: string | null;
+  observedAt: string | null;
+  lastUpdated: string | null;
+  sourceUrl: string | null;
+  current: {
+    tempC: number | null;
+    feelsLikeC: number | null;
+    feelsLikeType: "wind_chill" | "humidex" | null;
+    condition: string;
+    iconCode: number | null;
+    windSpeedKmh: number | null;
+    windGustKmh: number | null;
+    windDirection: string | null;
+    humidityPct: number | null;
+  };
+  todaySummary: string | null;
+  alerts: WeatherAlert[];
+  hourly: HourlyWeatherPoint[];
+  attribution: string;
+  stale?: boolean;
+}
+
 export function formatDelay(delaySec: number | null | undefined): { text: string; tone: "ok" | "warn" | "err" | "muted" } {
   if (delaySec === null || delaySec === undefined || !Number.isFinite(delaySec)) {
     return { text: "Unknown", tone: "muted" };
