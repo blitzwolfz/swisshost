@@ -885,7 +885,7 @@ export function TransitMap({
         const compass = found.bearingDeg !== null ? formatCompass(found.bearingDeg) : "";
         const sourceTag =
           found.positionSource === "scheduled"
-            ? "Timetable estimate"
+            ? "Calculated position (no live GPS)"
             : found.freshness === "stale"
               ? `Last seen ${formatClock(found.observedAt ?? found.receivedAt)}`
               : `Live GPS · ${found.ageSeconds}s ago`;

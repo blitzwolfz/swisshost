@@ -351,16 +351,16 @@ export default function LiveMapPage() {
   const feedNote =
     live.feedStatus === "missing_key"
       ? scheduledTrainCount > 0
-        ? `${scheduledTrainCount} trains by timetable (API key pending)`
+        ? `${scheduledTrainCount} calculated trains (API key pending)`
         : "waiting for an API key"
       : live.lastSuccessAt
         ? scheduledTrainCount > 0
-          ? `${liveGpsCount} GPS · ${scheduledTrainCount} timetable`
+          ? `${liveGpsCount} GPS · ${scheduledTrainCount} calculated`
           : `updated ${formatRelativeAge(live.lastSuccessAt)}`
         : live.connection === "connecting" && settledAgency !== agencyId
           ? "connecting"
           : scheduledTrainCount > 0
-            ? `${scheduledTrainCount} trains by timetable`
+            ? `${scheduledTrainCount} calculated trains`
             : live.feedStatus === "fresh"
               ? "live feed"
               : "no recent update";
@@ -505,7 +505,7 @@ export default function LiveMapPage() {
 
       {activeAgency?.liveStatus === "missing_key" && (
         <p className="m-0 text-sm">
-          <strong>{activeAgency.name}</strong> trains are currently estimated from the rail timetable while{" "}
+          <strong>{activeAgency.name}</strong> train positions are calculated from the rail schedule &amp; speed model while{" "}
           <code>GO_TRANSIT_API_KEY</code> is pending. Live GPS trains &amp; buses activate automatically once set.{" "}
           <Link to="/status">Feed status</Link>
         </p>
@@ -623,7 +623,7 @@ export default function LiveMapPage() {
           const rightText = stale
             ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}`
             : scheduled
-              ? "Timetable"
+              ? "Calculated"
               : d.tone !== "muted"
                 ? d.text
                 : v.speedMps !== null
@@ -767,7 +767,7 @@ export default function LiveMapPage() {
             </span>
             , {agencyShortName(activeVehicle.agencyId)}.{" "}
             {activeVehicle.positionSource === "scheduled" ? (
-              <i>Timetable estimate (no public live GPS feed yet)</i>
+              <i>Position calculated from schedule &amp; train speed model (no public live GPS feed)</i>
             ) : activeVehicle.freshness === "stale" ? (
               <i>Last seen {formatClock(activeVehicle.observedAt ?? activeVehicle.receivedAt)}</i>
             ) : (
