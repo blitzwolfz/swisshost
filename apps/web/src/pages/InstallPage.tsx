@@ -21,10 +21,10 @@ export default function InstallPage() {
     <div className="sh-page sh-page-narrow">
       <div className="sh-page-head">
         <div>
-          <p className="sh-kicker">
-            <Link to="/">Map</Link> / Install
-          </p>
-          <h1 className="sh-title sh-title-sm">Save as an App</h1>
+          <nav aria-label="Breadcrumb" className="sh-kicker">
+            <Link to="/">Map</Link>
+          </nav>
+          <h1 className="sh-title sh-title-sm">Save as an app</h1>
           <p className="sh-lede">
             Install Swisshost to your home screen or desktop dock as a standalone Progressive Web App — no app store
             required, instant launch, and offline access to your favourites and recently viewed routes and stops.
@@ -34,15 +34,15 @@ export default function InstallPage() {
         <div className="flex flex-wrap gap-2">
           {isStandalone ? (
             <span className="sh-pill sh-pill-ok">
-              <Check size={14} /> Already installed
+              <Check size={18} aria-hidden="true" /> Already installed
             </span>
           ) : canPrompt ? (
             <button type="button" className="sh-btn sh-btn-primary" onClick={handleInstall}>
-              <Download size={15} /> Install Swisshost
+              <Download size={18} aria-hidden="true" /> Install Swisshost
             </button>
           ) : (
             <span className="sh-pill sh-pill-muted">
-              <Smartphone size={13} /> Detected: {platform === "ios" ? "iPhone / iPad" : platform === "android" ? "Android" : "Desktop"}
+              <Smartphone size={18} aria-hidden="true" /> Detected: {platform === "ios" ? "iPhone / iPad" : platform === "android" ? "Android" : "Desktop"}
             </span>
           )}
         </div>
@@ -104,7 +104,7 @@ export default function InstallPage() {
               <li>
                 Tap the{" "}
                 <span className="inline-flex items-center gap-1 font-semibold">
-                  <Share size={14} /> Share
+                  <Share size={18} aria-hidden="true" /> Share
                 </span>{" "}
                 button in Safari&apos;s toolbar (bottom bar on iPhone, top-right on iPad).
               </li>
@@ -124,7 +124,7 @@ export default function InstallPage() {
             {canPrompt && (
               <div>
                 <button type="button" className="sh-btn sh-btn-primary" onClick={handleInstall}>
-                  <Download size={15} /> Install Swisshost now
+                  <Download size={18} aria-hidden="true" /> Install Swisshost now
                 </button>
               </div>
             )}
@@ -151,7 +151,7 @@ export default function InstallPage() {
             {canPrompt && (
               <div>
                 <button type="button" className="sh-btn sh-btn-primary" onClick={handleInstall}>
-                  <Download size={15} /> Install Swisshost now
+                  <Download size={18} aria-hidden="true" /> Install Swisshost now
                 </button>
               </div>
             )}
@@ -204,7 +204,7 @@ export default function InstallPage() {
                 <td>Cached from your last synced visit and clearly marked when offline.</td>
               </tr>
               <tr>
-                <td className="font-semibold">Live GPS positions &amp; departures</td>
+                <td className="font-semibold">Live positions and departures</td>
                 <td>Requires an active network connection; stale data is never labelled as live.</td>
               </tr>
             </tbody>

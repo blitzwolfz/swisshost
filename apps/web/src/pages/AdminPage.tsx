@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Lock, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { apiJson, formatRelativeAge } from "../lib/api";
+import { agencyShortName } from "../lib/agencies";
 
 export default function AdminPage() {
   const qc = useQueryClient();
@@ -102,7 +103,7 @@ export default function AdminPage() {
             </div>
             <div>
               <h1 className="sh-title sh-title-sm">
-                {needsSetup ? "Create Admin Login" : "Admin Sign In"}
+                {needsSetup ? "Create admin login" : "Admin sign in"}
               </h1>
               <p className="text-xs m-0" style={{ color: "var(--text-muted)" }}>
                 {needsSetup
@@ -157,7 +158,7 @@ export default function AdminPage() {
           </div>
 
           <button type="submit" disabled={submitting} className="sh-btn sh-btn-primary w-full py-2">
-            {submitting ? "Working…" : needsSetup ? "Set Admin Password & Enter" : "Sign In"}
+            {submitting ? "Working…" : needsSetup ? "Set admin password and continue" : "Sign in"}
           </button>
         </form>
       </div>
@@ -170,18 +171,18 @@ export default function AdminPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker flex items-center gap-1.5">
-            <ShieldCheck size={14} /> Signed in as {authStatus.actor}
-          </div>
-          <h1 className="sh-title">Feed Operations &amp; Admin</h1>
+          <h1 className="sh-title">Feed operations</h1>
+          <p className="sh-lede flex items-center gap-1.5">
+            <ShieldCheck size={16} aria-hidden="true" /> Signed in as {authStatus.actor}
+          </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
           <button type="button" className="sh-btn sh-btn-primary" onClick={() => runAction("Watchdog", "/admin/watchdog")}>
-            <RefreshCw size={13} /> Run Watchdog
+            <RefreshCw size={18} aria-hidden="true" /> Run watchdog
           </button>
           <button type="button" className="sh-btn" onClick={() => runAction("12h GitHub Archive", "/admin/archive/run")}>
-            <Archive size={13} /> Run Archive
+            <Archive size={18} aria-hidden="true" /> Run archive
           </button>
           <button
             type="button"
@@ -209,11 +210,11 @@ export default function AdminPage() {
                 <span className="tabular-nums">{data.quota.d1Writes.toLocaleString()} / {data.quota.d1WriteBudget.toLocaleString()} ({d1Pct}%)</span>
               </div>
               <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
-                <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--signal)" : "var(--ink)" }} />
+                <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--danger)" : "var(--ink)" }} />
               </div>
             </div>
             <div className="sh-card p-4 space-y-1.5 text-xs">
-              <div className="font-bold">Configured Worker Secrets</div>
+              <div className="font-bold">Configured worker secrets</div>
               <div className="flex flex-wrap gap-2">
                 {Object.entries(data.secretsStatus).map(([k, ok]) => (
                   <span key={k} className={`sh-pill ${ok ? "sh-pill-ok" : "sh-pill-warn"}`}>
@@ -234,7 +235,7 @@ export default function AdminPage() {
                     <th>Agency</th>
                     <th>Status</th>
                     <th>Entities</th>
-                    <th>Last Success</th>
+                    <th>Last success</th>
                     <th className="text-right">Controls</th>
                   </tr>
                 </thead>
@@ -242,7 +243,7 @@ export default function AdminPage() {
                   {data.feeds.map((f) => (
                     <tr key={f.id}>
                       <td className="font-mono text-xs font-semibold">{f.id}</td>
-                      <td className="uppercase text-xs font-bold">{f.agency_id}</td>
+                      <td className="font-bold">{agencyShortName(f.agency_id)}</td>
                       <td>
                         <span
                           className={`sh-pill ${
@@ -288,7 +289,7 @@ export default function AdminPage() {
                               className="sh-btn py-1 px-2 text-xs"
                               onClick={() => runAction(`Poll ${f.id}`, `/admin/feeds/${f.id}/poll`)}
                             >
-                              <Play size={11} /> Poll
+                              <Play size={18} aria-hidden="true" /> Poll
                             </button>
                             <button
                               type="button"
@@ -319,7 +320,7 @@ export default function AdminPage() {
           </section>
 
           <section className="space-y-2.5">
-            <h2 className="sh-section-title">Audit Log</h2>
+            <h2 className="sh-section-title">Audit log</h2>
             <div className="sh-table-wrap">
               <table className="sh-table">
                 <thead>

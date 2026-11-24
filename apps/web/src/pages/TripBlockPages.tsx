@@ -2,6 +2,7 @@ import React from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiJson } from "../lib/api";
+import { agencyShortName } from "../lib/agencies";
 
 function fmtSec(sec: number | null | undefined): string {
   if (sec === null || sec === undefined) return "—";
@@ -64,12 +65,12 @@ export function TripDetailPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4 space-y-5">
+    <div className="sh-page sh-page-narrow">
       <div>
-        <div className="sh-kicker">
-          Trip / {agencyId} / {data.serviceDate}
-        </div>
         <h1 className="sh-title">Trip {data.tripId}</h1>
+        <p className="sh-lede">
+          {agencyShortName(agencyId)}, service day {data.serviceDate}
+        </p>
         <div className="text-xs mt-1 space-x-3" style={{ color: "var(--text-muted)" }}>
           {data.trip?.route_id ? (
             <Link to={`/routes/${agencyId}/${encodeURIComponent(String(data.trip.route_id))}`}>
@@ -96,7 +97,7 @@ export function TripDetailPage() {
           <div>
             Currently assigned to{" "}
             <Link to={`/vehicles/${agencyId}/${encodeURIComponent(String(data.liveVehicle.vehicle_id))}`}>
-              <strong>Vehicle #{String(data.liveVehicle.fleet_number)}</strong>
+              <strong>Vehicle <span className="sh-narrow">{String(data.liveVehicle.fleet_number)}</span></strong>
             </Link>
           </div>
           <div className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -106,15 +107,15 @@ export function TripDetailPage() {
       )}
 
       <section className="space-y-2">
-        <h2 className="text-base font-semibold m-0">Ordered Stop Timeline</h2>
+        <h2 className="sh-section-title">Stops in order</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
               <tr>
-                <th>#</th>
+                <th>Order</th>
                 <th>Stop</th>
                 <th>Scheduled</th>
-                <th>Realtime Delay / Status</th>
+                <th>Realtime delay / status</th>
               </tr>
             </thead>
             <tbody>
@@ -155,7 +156,7 @@ export function TripDetailPage() {
 
       {data.assignments.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-base font-semibold m-0">Observed Vehicle Assignments</h2>
+          <h2 className="sh-section-title">Vehicles seen on this trip</h2>
           <div className="sh-table-wrap">
             <table className="sh-table">
               <thead>
@@ -170,7 +171,7 @@ export function TripDetailPage() {
                 {data.assignments.map((a) => (
                   <tr key={a.id}>
                     <td>
-                      <Link to={`/vehicles/${agencyId}/${encodeURIComponent(a.vehicle_id)}`}>#{a.vehicle_id}</Link>
+                      <Link to={`/vehicles/${agencyId}/${encodeURIComponent(a.vehicle_id)}`}>{a.vehicle_id}</Link>
                     </td>
                     <td className="text-xs">{new Date(a.started_at).toLocaleTimeString()}</td>
                     <td className="text-xs">{new Date(a.ended_at).toLocaleTimeString()}</td>
@@ -202,20 +203,20 @@ export function BlockDetailPage() {
   });
 
   if (isLoading) return <div className="sh-page text-sm">Loading block…</div>;
-  if (error || !data) return <div className="sh-page text-sm">Block not found.</div>;
+  if (error || !data) return <div className="sh-page text-sm">This block could not be found for today. It may not run on this service day.</div>;
 
   return (
-    <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4 space-y-4">
+    <div className="sh-page sh-page-narrow">
       <div>
-        <div className="sh-kicker">
-          Block / {agencyId} / {data.serviceDate}
-        </div>
         <h1 className="sh-title">Block {data.blockId}</h1>
+        <p className="sh-lede">
+          {agencyShortName(agencyId)}, service day {data.serviceDate}
+        </p>
         <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{data.note}</p>
       </div>
 
       <section className="space-y-2">
-        <h2 className="text-base font-semibold m-0">Scheduled Trips ({data.trips.length})</h2>
+        <h2 className="sh-section-title">Scheduled trips ({data.trips.length})</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>

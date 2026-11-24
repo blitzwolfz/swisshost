@@ -1,10 +1,12 @@
 import React, { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ArrowUpRight, History as HistoryIcon, MapPin, Star } from "lucide-react";
+import { History as HistoryIcon, Star } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
 import { apiJson, formatDelay, formatSpeed, type LiveVehicle } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
+import { agencyName } from "../lib/agencies";
+import { routeColor } from "../lib/routeColors";
 
 interface RouteRow {
   routeId: string;
@@ -50,10 +52,7 @@ export function RoutesPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            {effectiveAgency.toUpperCase()} Network
-          </div>
-          <h1 className="sh-title">Routes</h1>
+          <h1 className="sh-title">{agencyName(effectiveAgency)} routes</h1>
           <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
             {data?.staticVersionId
               ? `Active static GTFS version ${data.staticVersionId} · ${filtered.length} routes shown`
@@ -66,16 +65,17 @@ export function RoutesPage() {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter route # or name…"
+            placeholder="Route number or name"
             aria-label="Filter routes"
             className="sh-input w-56"
           />
           <button
             type="button"
             onClick={() => setOnlyActive((a) => !a)}
+            aria-pressed={onlyActive}
             className={`sh-btn ${onlyActive ? "sh-btn-primary" : ""}`}
           >
-            {onlyActive ? "Active Only ✓" : "Active Only"}
+            Running now only
           </button>
         </div>
       </div>
@@ -88,8 +88,8 @@ export function RoutesPage() {
           <thead>
             <tr>
               <th>Route</th>
-              <th>Corridor / Name</th>
-              <th>Live Fleet</th>
+              <th>Name</th>
+              <th>Live fleet</th>
               <th>Alerts</th>
               <th>Provenance</th>
               <th className="text-right">Explore</th>
@@ -112,7 +112,7 @@ export function RoutesPage() {
                     >
                       <span
                         className="sh-route-shield text-white"
-                        style={{ backgroundColor: r.color || "#E2001A" }}
+                        style={{ backgroundColor: routeColor(effectiveAgency, r.routeId, r.color) }}
                       >
                         {r.shortName}
                       </span>
@@ -139,7 +139,7 @@ export function RoutesPage() {
                   <td>
                     {r.activeAlerts > 0 ? (
                       <span className="sh-pill sh-pill-warn">
-                        <AlertTriangle size={11} /> {r.activeAlerts}
+                        {r.activeAlerts} {r.activeAlerts === 1 ? "alert" : "alerts"}
                       </span>
                     ) : (
                       <span className="text-xs" style={{ color: "var(--text-muted)" }}>None</span>
@@ -226,13 +226,13 @@ export function RouteDetailPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div className="space-y-1">
-          <div className="sh-kicker">
-            <Link to="/routes">Routes</Link> / {agencyId}
-          </div>
+          <nav aria-label="Breadcrumb" className="sh-kicker">
+            <Link to="/routes">Routes</Link>
+          </nav>
           <div className="flex items-center gap-3">
             <span
               className="sh-route-shield text-white text-base px-3 py-1"
-              style={{ backgroundColor: data.route.color || "#E2001A" }}
+              style={{ backgroundColor: routeColor(agencyId, data.route.routeId ?? routeId, data.route.color) }}
             >
               {data.route.shortName}
             </span>
@@ -270,7 +270,7 @@ export function RouteDetailPage() {
             {fav ? "Favorited" : "Favorite"}
           </button>
           <Link to={`/history?agency=${agencyId}&route=${encodeURIComponent(routeId)}`} className="sh-btn sh-btn-primary">
-            <HistoryIcon size={14} /> History &amp; Export
+            <HistoryIcon size={18} aria-hidden="true" /> History and export
           </Link>
         </div>
       </div>
@@ -280,10 +280,9 @@ export function RouteDetailPage() {
           {data.alerts.map((a) => (
             <div
               key={a.id}
-              className="sh-card p-3.5 text-sm flex items-start gap-2.5"
-              style={{ background: "var(--signal-yellow)", color: "#000" }}
+              className="sh-card py-3 text-sm"
+              style={{ borderBottom: "1px solid var(--rule)" }}
             >
-              <AlertTriangle size={16} className="shrink-0 mt-0.5" />
               <div>
                 <div className="font-bold">{a.header_text}</div>
                 {a.description_text && <p className="m-0 mt-1 text-xs">{a.description_text}</p>}
@@ -304,12 +303,12 @@ export function RouteDetailPage() {
       />
 
       <section className="space-y-2.5">
-        <h2 className="sh-section-title">Active Vehicles ({data.activeVehicles.length})</h2>
+        <h2 className="sh-section-title">Vehicles on this route ({data.activeVehicles.length})</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
               <tr>
-                <th>Fleet #</th>
+                <th>Fleet</th>
                 <th>Trip</th>
                 <th>Speed</th>
                 <th>Deviation</th>
@@ -330,7 +329,7 @@ export function RouteDetailPage() {
                     <tr key={v.sourceVehicleId}>
                       <td className="font-bold tabular-nums">
                         <Link to={`/vehicles/${agencyId}/${encodeURIComponent(v.vehicleId)}`} className="inline-flex items-center gap-1">
-                          #{v.fleetNumber} <ArrowUpRight size={12} />
+                          {v.fleetNumber}
                         </Link>
                       </td>
                       <td className="font-mono text-xs">
@@ -359,15 +358,15 @@ export function RouteDetailPage() {
       {data.stops.length > 0 && (
         <section className="space-y-2.5">
           <h2 className="sh-section-title flex items-center gap-2">
-            <MapPin size={16} /> Stops ({data.stops.length})
+            Stops ({data.stops.length})
           </h2>
           <div className="sh-table-wrap max-h-96 overflow-y-auto">
             <table className="sh-table">
               <thead>
                 <tr>
-                  <th>#</th>
+                  <th>Order</th>
                   <th>Code</th>
-                  <th>Stop Name</th>
+                  <th>Stop name</th>
                 </tr>
               </thead>
               <tbody>
@@ -391,7 +390,7 @@ export function RouteDetailPage() {
       {data.trips.length > 0 && (
         <section className="space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="sh-section-title">Scheduled Trips ({filteredTrips.length})</h2>
+            <h2 className="sh-section-title">Scheduled trips ({filteredTrips.length})</h2>
             {data.route.directions.length > 0 && (
               <select
                 value={selectedDir}

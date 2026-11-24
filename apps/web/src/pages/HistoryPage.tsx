@@ -6,6 +6,7 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "rec
 import { TransitMap } from "../components/TransitMap";
 import { apiJson, formatSpeed, type LiveVehicle } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
+import { agencyName } from "../lib/agencies";
 
 interface HistoryPoint {
   observedAt: string;
@@ -176,10 +177,7 @@ export default function HistoryPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            {targetAgency.toUpperCase()} Archive &amp; Replay
-          </div>
-          <h1 className="sh-title">Historical Tracking</h1>
+          <h1 className="sh-title">{agencyName(targetAgency)} history</h1>
           <p className="text-xs m-0 mt-1 tabular-nums" style={{ color: "var(--text-muted)" }}>
             {data?.timezone ?? "America/Toronto"} · Earliest recorded observation:{" "}
             {data?.earliestAvailableAt ? new Date(data.earliestAvailableAt).toLocaleString() : "Collection active"}
@@ -187,10 +185,10 @@ export default function HistoryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" className="sh-btn" onClick={() => triggerExport("csv")}>
-            <Download size={14} /> CSV
+            <Download size={18} aria-hidden="true" /> CSV
           </button>
           <button type="button" className="sh-btn" onClick={() => triggerExport("geojson")}>
-            <Download size={14} /> GeoJSON
+            <Download size={18} aria-hidden="true" /> GeoJSON
           </button>
         </div>
       </div>
@@ -199,33 +197,35 @@ export default function HistoryPage() {
         <div className="sh-card px-3.5 py-2 text-xs font-medium">{exportStatus}</div>
       )}
 
-      <form onSubmit={applyFilters} className="sh-card p-3.5 flex flex-wrap items-end gap-3 text-sm">
+      <form onSubmit={applyFilters} className="flex flex-wrap items-end gap-3">
         <div>
-          <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Service Date</label>
-          <input type="date" value={dateInput} onChange={(e) => setDateInput(e.target.value)} className="sh-input" />
+          <label htmlFor="hist-date" className="sh-label">Service day</label>
+          <input id="hist-date" type="date" value={dateInput} onChange={(e) => setDateInput(e.target.value)} className="sh-input" />
         </div>
         <div>
-          <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Vehicle / Fleet #</label>
+          <label htmlFor="hist-vehicle" className="sh-label">Fleet number</label>
           <input
+            id="hist-vehicle"
             type="text"
             value={vehicleInput}
             onChange={(e) => setVehicleInput(e.target.value)}
-            placeholder="e.g. 4401"
+            placeholder="For example, 4401"
             className="sh-input w-40"
           />
         </div>
         <div>
-          <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Route ID</label>
+          <label htmlFor="hist-route" className="sh-label">Route</label>
           <input
+            id="hist-route"
             type="text"
             value={routeInput}
             onChange={(e) => setRouteInput(e.target.value)}
-            placeholder="e.g. 504"
+            placeholder="For example, 504"
             className="sh-input w-36"
           />
         </div>
         <button type="submit" className="sh-btn sh-btn-primary">
-          Load Observations
+          Show positions
         </button>
       </form>
 
@@ -253,14 +253,15 @@ export default function HistoryPage() {
                     className="sh-btn sh-btn-primary"
                     onClick={() => setPlaying((p) => !p)}
                   >
-                    {playing ? <Pause size={14} /> : <Play size={14} />}
+                    {playing ? <Pause size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
                     {playing ? "Pause" : "Play"}
                   </button>
                   {([1, 5, 20, 60] as const).map((spd) => (
                     <button
                       key={spd}
                       type="button"
-                      className={`sh-btn px-2.5 text-xs ${speedMultiplier === spd ? "sh-highlight font-bold" : ""}`}
+                      className={`sh-btn px-3 ${speedMultiplier === spd ? "sh-highlight" : ""}`}
+                      aria-pressed={speedMultiplier === spd}
                       onClick={() => setSpeedMultiplier(spd)}
                     >
                       {spd}x
@@ -268,7 +269,7 @@ export default function HistoryPage() {
                   ))}
                 </div>
                 <div className="text-xs font-mono tabular-nums font-semibold">
-                  {currentPoint ? new Date(currentPoint.observedAt).toLocaleString() : "—"} · #{playIndex + 1}/{points.length}
+                  {currentPoint ? new Date(currentPoint.observedAt).toLocaleString() : "—"}, position {playIndex + 1} of {points.length}
                 </div>
               </div>
               <input
@@ -294,7 +295,7 @@ export default function HistoryPage() {
                     <XAxis dataKey="time" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} />
                     <Tooltip />
-                    <Area type="monotone" dataKey="speed" stroke="#E2001A" fill="#E2001A" fillOpacity={0.14} strokeWidth={2} />
+                    <Area type="monotone" dataKey="speed" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.12} strokeWidth={2} isAnimationActive={false} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -302,12 +303,12 @@ export default function HistoryPage() {
           )}
 
           <section className="space-y-2">
-            <h2 className="sh-section-title">Recorded Observations ({points.length})</h2>
+            <h2 className="sh-section-title">Recorded positions ({points.length})</h2>
             <div className="sh-table-wrap max-h-80 overflow-y-auto">
               <table className="sh-table">
                 <thead>
                   <tr>
-                    <th>Observed Time</th>
+                    <th>Observed time</th>
                     <th>Vehicle</th>
                     <th>Route</th>
                     <th>Coordinates</th>
@@ -322,7 +323,7 @@ export default function HistoryPage() {
                       <td className="font-semibold tabular-nums">
                         {p.vehicleId ? (
                           <Link to={`/vehicles/${targetAgency}/${encodeURIComponent(p.vehicleId)}`}>
-                            #{p.fleetNumber ?? p.vehicleId}
+                            {p.fleetNumber ?? p.vehicleId}
                           </Link>
                         ) : (
                           vehicleParam || "—"

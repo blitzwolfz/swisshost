@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowDownUp, ArrowRight, Footprints, LocateFixed, MapPin, Navigation } from "lucide-react";
 import { apiJson } from "../lib/api";
 import { useUserLocation } from "../hooks/useUserLocation";
+import { agencyShortName } from "../lib/agencies";
+import { routeColor } from "../lib/routeColors";
 
 interface GeoChoice {
   id: string;
@@ -111,7 +113,7 @@ function PlaceField({
                 <strong className="block truncate">{item.label}</strong>
                 <span className="text-xs opacity-70 block truncate">{item.subtitle}</span>
               </span>
-              <span className="text-xs uppercase opacity-60 shrink-0">{item.kind}</span>
+              <span className="text-sm sh-muted shrink-0">{item.kind}</span>
             </button>
           ))}
         </div>
@@ -179,22 +181,22 @@ export default function PlanPage() {
     <div className="sh-page sh-page-narrow">
       <div className="sh-page-head">
         <div>
-          <p className="sh-kicker">
-            <Link to="/">Map</Link> / Route finder
-          </p>
-          <h1 className="sh-title sh-title-sm">Find a Route</h1>
+          <nav aria-label="Breadcrumb" className="sh-kicker">
+            <Link to="/">Map</Link>
+          </nav>
+          <h1 className="sh-title sh-title-sm">Plan a trip</h1>
           <p className="sh-lede">
             Enter where you are and where you&apos;re going to see direct and 1-transfer bus, streetcar, or GO routes
             with live vehicles.
           </p>
         </div>
         <button type="button" className="sh-btn" onClick={useMyLocation} disabled={locating}>
-          <LocateFixed size={15} /> {locating ? "Locating…" : "Use my location"}
+          <LocateFixed size={18} aria-hidden="true" /> {locating ? "Locating…" : "Use my location"}
         </button>
       </div>
 
       {gpsError && (
-        <div className="p-3 text-sm border-2" style={{ borderColor: "var(--signal)", color: "var(--status-err)" }}>
+        <div className="p-3 text-sm border-2" style={{ borderColor: "var(--danger)", color: "var(--danger)" }}>
           {gpsError}
         </div>
       )}
@@ -218,7 +220,7 @@ export default function PlanPage() {
               setDest(prevO);
             }}
           >
-            <ArrowDownUp size={15} />
+            <ArrowDownUp size={18} aria-hidden="true" />
           </button>
           <PlaceField
             label="To"
@@ -261,16 +263,16 @@ export default function PlanPage() {
                         .filter((l) => l.mode === "transit")
                         .map((leg, idx) => (
                           <React.Fragment key={idx}>
-                            {idx > 0 && <ArrowRight size={14} />}
+                            {idx > 0 && <ArrowRight size={18} aria-hidden="true" />}
                             <span
                               className="sh-route-shield text-white"
-                              style={{ backgroundColor: leg.routeColor || "#E2001A" }}
+                              style={{ backgroundColor: routeColor(opt.agencyId, leg.routeId, leg.routeColor) }}
                             >
                               {leg.routeShortName}
                             </span>
                           </React.Fragment>
                         ))}
-                      <span className="sh-pill sh-pill-muted uppercase">{opt.agencyId}</span>
+                      <span className="sh-pill sh-pill-muted">{agencyShortName(opt.agencyId)}</span>
                       <span className="sh-pill sh-pill-muted">
                         {opt.kind === "direct" ? "Direct" : "1 transfer"}
                       </span>
@@ -292,7 +294,7 @@ export default function PlanPage() {
                           {leg.mode === "walk" ? (
                             <Footprints size={16} className="mt-0.5 shrink-0" style={{ color: "var(--text-muted)" }} />
                           ) : (
-                            <Navigation size={16} className="mt-0.5 shrink-0" style={{ color: "var(--signal)" }} />
+                            <Navigation size={16} className="mt-0.5 shrink-0" style={{ color: "var(--accent)" }} />
                           )}
                           <div>
                             {leg.mode === "walk" ? (
@@ -350,7 +352,7 @@ export default function PlanPage() {
                                       to={`/?vehicle=${encodeURIComponent(leg.nearestVehicleId)}`}
                                       className="font-semibold"
                                     >
-                                      Track nearest (#{leg.nearestFleetNumber})
+                                      Track nearest, {leg.nearestFleetNumber}
                                     </Link>
                                   )}
                                 </div>

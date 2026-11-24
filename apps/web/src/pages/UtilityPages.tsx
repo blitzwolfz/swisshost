@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Bell, CheckCircle2, Star } from "lucide-react";
 import { apiJson, formatRelativeAge } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
+import { agencyName, agencyShortName } from "../lib/agencies";
 
 export function AlertsPage() {
   const { agencyId } = usePreferences();
@@ -33,10 +34,7 @@ export function AlertsPage() {
     <div className="sh-page sh-page-narrow">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            {effectiveAgency.toUpperCase()} Advisories
-          </div>
-          <h1 className="sh-title">Service Alerts</h1>
+          <h1 className="sh-title">{agencyName(effectiveAgency)} service alerts</h1>
         </div>
         <label className="text-xs font-semibold flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={historical} onChange={(e) => setHistorical(e.target.checked)} />
@@ -140,13 +138,10 @@ export function StatusPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            Observability &amp; Free-Tier Guardrails
-          </div>
-          <h1 className="sh-title">Feed Status &amp; Capacity</h1>
+          <h1 className="sh-title">Feed status and capacity</h1>
         </div>
         <span className={`sh-pill ${data.platformStatus === "operational" ? "sh-pill-ok" : "sh-pill-warn"}`}>
-          Platform: {data.platformStatus} · Quota tier: {data.quota.tier}
+          Platform {data.platformStatus}, quota tier {data.quota.tier}
         </span>
       </div>
 
@@ -154,26 +149,26 @@ export function StatusPage() {
       <div className="grid sm:grid-cols-2 gap-4">
         <div className="sh-card p-4 space-y-2">
           <div className="flex justify-between text-xs font-semibold">
-            <span>Daily D1 Writes (Free Budget)</span>
+            <span>Daily D1 writes (free budget)</span>
             <span className="tabular-nums">{data.quota.d1Writes.toLocaleString()} / {data.quota.d1WriteBudget.toLocaleString()} ({d1Pct}%)</span>
           </div>
           <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
-            <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--signal)" : "var(--ink)" }} />
+            <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--danger)" : "var(--ink)" }} />
           </div>
         </div>
         <div className="sh-card p-4 space-y-2">
           <div className="flex justify-between text-xs font-semibold">
-            <span>Daily Durable Object Requests</span>
+            <span>Daily Durable Object requests</span>
             <span className="tabular-nums">{data.quota.doRequests.toLocaleString()} / {data.quota.doRequestBudget.toLocaleString()} ({doPct}%)</span>
           </div>
           <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
-            <div className="h-full" style={{ width: `${doPct}%`, background: doPct >= 85 ? "var(--signal)" : "var(--ink)" }} />
+            <div className="h-full" style={{ width: `${doPct}%`, background: doPct >= 85 ? "var(--danger)" : "var(--ink)" }} />
           </div>
         </div>
       </div>
 
       <section className="space-y-2.5">
-        <h2 className="sh-section-title">Upstream Agency Feeds</h2>
+        <h2 className="sh-section-title">Agency feeds</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
@@ -183,7 +178,7 @@ export function StatusPage() {
                 <th>Kind</th>
                 <th>Status</th>
                 <th>Entities</th>
-                <th>Last Success</th>
+                <th>Last success</th>
                 <th>Diagnostics</th>
               </tr>
             </thead>
@@ -191,7 +186,7 @@ export function StatusPage() {
               {data.feeds.map((f) => (
                 <tr key={f.id}>
                   <td className="font-mono text-xs font-semibold">{f.id}</td>
-                  <td className="uppercase text-xs font-bold">{f.agency_id}</td>
+                  <td className="font-bold">{agencyShortName(f.agency_id)}</td>
                   <td className="text-xs">{f.kind}</td>
                   <td>
                     <span
@@ -221,7 +216,7 @@ export function StatusPage() {
       </section>
 
       <section className="space-y-2.5">
-        <h2 className="sh-section-title">12-Hour GitHub Archive (swisshost-data)</h2>
+        <h2 className="sh-section-title">12-hour GitHub archive (swisshost-data)</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
@@ -243,7 +238,7 @@ export function StatusPage() {
               ) : (
                 data.archives.map((a, i) => (
                   <tr key={i}>
-                    <td className="uppercase text-xs font-bold">{a.agency_id}</td>
+                    <td className="font-bold">{agencyShortName(a.agency_id)}</td>
                     <td className="font-mono text-xs">{a.window_key}</td>
                     <td><span className="sh-pill sh-pill-muted">{a.status}</span></td>
                     <td className="tabular-nums">{a.row_count}</td>
@@ -273,11 +268,8 @@ export function FavoritesPage() {
     <div className="sh-page sh-page-narrow">
       <div className="flex items-end justify-between">
         <div>
-          <div className="sh-kicker">
-            Saved Locally &amp; Offline-Ready
-          </div>
-          <h1 className="sh-title flex items-center gap-2">
-            <Star size={20} style={{ color: "var(--gold-accent)" }} /> Favorites ({favorites.length})
+          <h1 className="sh-title">
+            Saved ({favorites.length})
           </h1>
         </div>
         <Link to="/account" className="text-xs font-semibold">
@@ -305,8 +297,8 @@ export function FavoritesPage() {
                   <td className="font-semibold">
                     <Link to={entityLink(f)}>{f.label}</Link>
                   </td>
-                  <td><span className="sh-pill sh-pill-muted uppercase">{f.entityType}</span></td>
-                  <td className="text-xs uppercase font-bold">{f.agencyId}</td>
+                  <td className="sh-muted">{f.entityType}</td>
+                  <td className="font-bold">{agencyShortName(f.agencyId)}</td>
                   <td className="text-right">
                     <button type="button" className="sh-btn text-xs" onClick={() => toggleFavorite(f)}>
                       Remove
@@ -386,10 +378,7 @@ export function AccountPage() {
   return (
     <div className="sh-page sh-page-narrow">
       <div>
-        <div className="sh-kicker">
-          Optional Sync &amp; Vehicle Alerts
-        </div>
-        <h1 className="sh-title">Account &amp; Notifications</h1>
+        <h1 className="sh-title">Account and notifications</h1>
         <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
           Public browsing never requires an account. Create an optional handle &amp; password to watch specific fleet numbers.
         </p>
@@ -448,7 +437,7 @@ export function AccountPage() {
             </div>
           </div>
           <button type="submit" className="sh-btn sh-btn-primary w-full">
-            {mode === "register" ? "Create Account" : "Sign In"}
+            {mode === "register" ? "Create account" : "Sign in"}
           </button>
         </form>
       ) : (
@@ -513,12 +502,12 @@ export function AccountPage() {
               />
             </div>
             <button type="submit" className="sh-btn sh-btn-primary">
-              <Bell size={14} /> Watch Vehicle
+              <Bell size={18} aria-hidden="true" /> Watch vehicle
             </button>
           </form>
 
           <section className="space-y-2">
-            <h2 className="sh-section-title">Active Watches ({subsData?.subscriptions.length ?? 0})</h2>
+            <h2 className="sh-section-title">Active watches ({subsData?.subscriptions.length ?? 0})</h2>
             <div className="sh-table-wrap">
               <table className="sh-table">
                 <thead>
@@ -532,8 +521,8 @@ export function AccountPage() {
                 <tbody>
                   {(subsData?.subscriptions ?? []).map((s) => (
                     <tr key={s.id}>
-                      <td className="uppercase text-xs font-bold">{s.agency_id}</td>
-                      <td>{s.target_type} #{s.target_id}</td>
+                      <td className="font-bold">{agencyShortName(s.agency_id)}</td>
+                      <td>{s.target_type} {s.target_id}</td>
                       <td className="font-mono text-xs">{s.rule_json}</td>
                       <td className="text-right">
                         <button

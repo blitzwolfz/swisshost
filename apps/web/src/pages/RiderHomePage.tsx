@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Bus, Compass, LocateFixed, MapPin, Navigation, Search } from "lucide-react";
+import { Bell, Compass, LocateFixed, Navigation, Search } from "lucide-react";
 import { apiJson, formatVehicleStatusLine, type LiveVehicle } from "../lib/api";
 import { useUserLocation } from "../hooks/useUserLocation";
+import { agencyShortName } from "../lib/agencies";
+import { routeColor } from "../lib/routeColors";
 
 interface NearbyResponse {
   lat: number;
@@ -107,8 +109,7 @@ export default function RiderHomePage() {
     <div className="sh-page sh-page-narrow">
       <div className="sh-page-head">
         <div>
-          <p className="sh-kicker">Simple Rider View</p>
-          <h1 className="sh-title sh-title-sm">Ride Ontario Transit</h1>
+          <h1 className="sh-title sh-title-sm">Simple view</h1>
           <p className="sh-lede">
             Find which route to take, see stops near you, or turn on live GPS to track the bus, streetcar, or train
             you&apos;re on right now.
@@ -117,10 +118,11 @@ export default function RiderHomePage() {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            className={`sh-btn ${watching ? "sh-highlight" : "sh-btn-primary"}`}
+            className={`sh-btn ${watching ? "" : "sh-btn-primary"}`}
+            aria-pressed={watching}
             onClick={watching ? stopWatching : startWatching}
           >
-            <LocateFixed size={15} /> {watching ? "Stop GPS tracking" : "Track my location"}
+            <LocateFixed size={18} aria-hidden="true" /> {watching ? "Stop GPS tracking" : "Track my location"}
           </button>
           <Link to="/" className="sh-btn no-underline">
             Full live map
@@ -129,7 +131,7 @@ export default function RiderHomePage() {
       </div>
 
       {gpsError && (
-        <div className="p-3 text-sm border-2" style={{ borderColor: "var(--signal)", color: "var(--status-err)" }}>
+        <div className="py-2 text-sm font-bold" role="alert" style={{ color: "var(--danger)" }}>
           {gpsError}
         </div>
       )}
@@ -137,12 +139,12 @@ export default function RiderHomePage() {
       {alertFired && (
         <div
           role="alert"
-          className="p-4 text-sm font-bold flex items-center justify-between gap-3 border-2"
-          style={{ background: "var(--signal-yellow)", color: "#000", borderColor: "#000" }}
+          className="p-4 text-base font-bold flex items-center justify-between gap-3"
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
         >
           <span>
-            <Bell size={16} className="inline mr-2" />
-            Get ready to exit — approaching your selected stop!
+            <Bell size={18} aria-hidden="true" className="inline mr-2" />
+            Get ready to get off. Your stop is next.
           </span>
           <button type="button" className="sh-btn" onClick={() => { setAlertStopId(null); setAlertFired(null); }}>
             Dismiss
@@ -157,18 +159,18 @@ export default function RiderHomePage() {
         </label>
         <div className="flex flex-wrap gap-2">
           <div className="relative flex-1 min-w-[220px]">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Search size={18} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               id="simple-dest"
               type="text"
               value={destQuery}
               onChange={(e) => setDestQuery(e.target.value)}
-              placeholder="Enter a stop, station, or address (e.g. Union Station, Stone Road Mall)"
-              className="sh-input w-full pl-9"
+              placeholder="A stop, station or address, such as Union Station"
+              className="sh-input w-full pl-10"
             />
           </div>
           <button type="submit" className="sh-btn sh-btn-primary">
-            <Navigation size={14} /> Find route
+            <Navigation size={18} aria-hidden="true" /> Find a route
           </button>
         </div>
       </form>
@@ -179,14 +181,14 @@ export default function RiderHomePage() {
           <div className="flex flex-wrap items-start justify-between gap-3 pb-3 border-b-2" style={{ borderColor: "var(--ink)" }}>
             <div className="flex items-start gap-3">
               <span
-                className="sh-route-shield text-white text-base"
-                style={{ backgroundColor: rideData.vehicle.routeColor || "#E2001A" }}
+                className="sh-badge sh-badge-lg"
+                style={{ backgroundColor: routeColor(rideData.agencyId, rideData.vehicle.routeId, rideData.vehicle.routeColor) }}
               >
                 {rideData.vehicle.routeShortName ?? rideData.vehicle.routeId ?? "—"}
               </span>
               <div>
-                <div className="text-xs font-bold uppercase" style={{ color: "var(--signal)" }}>
-                  You&apos;re riding · {rideData.agencyId.toUpperCase()} #{rideData.vehicle.fleetNumber}
+                <div className="text-sm sh-muted">
+                  You are on {agencyShortName(rideData.agencyId)} <span className="sh-fleet">{rideData.vehicle.fleetNumber}</span>
                 </div>
                 <div className="text-lg font-bold leading-tight">
                   {rideData.vehicle.headsign || rideData.vehicle.routeLongName || `Route ${rideData.vehicle.routeId}`}
@@ -210,9 +212,8 @@ export default function RiderHomePage() {
           </div>
 
           <div className="space-y-1">
-            <div className="text-xs font-bold uppercase mb-2" style={{ color: "var(--text-muted)" }}>
-              Upcoming stops — tap a stop to alert you 1 stop before
-            </div>
+            <h2 className="m-0 text-base font-bold">Upcoming stops</h2>
+            <p className="m-0 mb-2 text-sm sh-muted">Pick your stop and we will alert you one stop before it.</p>
             {upcomingStops.length === 0 ? (
               <p className="text-sm" style={{ color: "var(--text-muted)" }}>
                 Upcoming stop list unavailable for this trip right now.
@@ -222,33 +223,34 @@ export default function RiderHomePage() {
                 {upcomingStops.slice(0, 20).map((s) => {
                   const isAlert = alertStopId === s.stopId;
                   return (
-                    <li key={`${s.stopSequence}-${s.stopId}`} className={`py-2.5 flex items-center justify-between gap-3 ${isAlert ? "sh-highlight px-2" : ""}`}>
+                    <li key={`${s.stopSequence}-${s.stopId}`} className={`py-2.5 min-h-[44px] flex items-center justify-between gap-3 ${isAlert ? "sh-highlight px-2" : ""}`}>
                       <button
                         type="button"
                         onClick={() => {
                           setAlertStopId(isAlert ? null : s.stopId);
                           setAlertFired(null);
                         }}
-                        className="text-left flex items-center gap-3 bg-transparent border-0 p-0 cursor-pointer flex-1 min-w-0"
-                        style={{ color: isAlert ? "#000" : "var(--text)" }}
+                        aria-pressed={isAlert}
+                        className="text-left flex items-center gap-3 bg-transparent border-0 p-0 cursor-pointer flex-1 min-w-0 min-h-[44px]"
+                        style={{ color: "inherit", font: "inherit" }}
                       >
                         <span
                           className="w-2.5 h-2.5 shrink-0"
                           style={{
-                            background: s.status === "current" ? "var(--signal)" : s.status === "next" ? "var(--ink)" : "var(--border)",
+                            background: s.status === "current" || s.status === "next" ? "currentColor" : "var(--rule)",
                           }}
                         />
                         <span className="truncate">
                           <strong className={s.status === "current" || s.status === "next" ? "font-bold" : "font-medium"}>
                             {s.name}
                           </strong>
-                          {s.status === "current" && <span className="ml-2 text-xs font-bold uppercase">Current stop</span>}
-                          {s.status === "next" && <span className="ml-2 text-xs font-bold uppercase">Next stop</span>}
-                          {isAlert && <span className="ml-2 text-xs font-bold">· Alert set</span>}
+                          {s.status === "current" && <span className="ml-2 text-sm">, here now</span>}
+                          {s.status === "next" && <span className="ml-2 text-sm">, next</span>}
+                          {isAlert && <span className="ml-2 text-sm font-bold">, alert set</span>}
                         </span>
                       </button>
                       <span className="text-sm font-bold tabular-nums shrink-0">
-                        {s.etaMinutes === 0 ? "Now" : s.etaMinutes !== null ? `${s.etaMinutes} min` : "—"}
+                        {s.etaMinutes === 0 ? "Now" : s.etaMinutes !== null ? `${s.etaMinutes} min` : ""}
                       </span>
                     </li>
                   );
@@ -259,18 +261,18 @@ export default function RiderHomePage() {
         </section>
       ) : position && (nearby?.nearbyVehicles.length ?? 0) > 0 ? (
         <section className="space-y-3">
-          <h2 className="sh-section-title">Vehicles near you — tap if you&apos;re on board</h2>
+          <h2 className="sh-section-title">Vehicles near you. Pick the one you are on.</h2>
           <div className="sh-card divide-y" style={{ borderColor: "var(--border)" }}>
             {nearby!.nearbyVehicles.slice(0, 6).map((v) => (
               <button
                 key={`${v.agencyId}-${v.vehicleId}`}
                 type="button"
                 onClick={() => setRidingVehicle({ agencyId: v.agencyId, vehicleId: v.vehicleId })}
-                className="w-full text-left p-4 flex items-center justify-between gap-3 bg-transparent border-0 cursor-pointer hover:bg-[var(--surface)]"
-                style={{ color: "var(--text)" }}
+                className="w-full text-left py-3 flex items-center justify-between gap-3 bg-transparent border-0 cursor-pointer"
+                style={{ color: "var(--ink)", font: "inherit", borderBottom: "1px solid var(--rule)" }}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="sh-route-shield text-white shrink-0" style={{ backgroundColor: v.routeColor || "#E2001A" }}>
+                  <span className="sh-badge sh-badge-lg shrink-0" style={{ backgroundColor: routeColor(v.agencyId, v.routeId, v.routeColor) }}>
                     {v.routeShortName ?? v.routeId ?? "—"}
                   </span>
                   <div className="min-w-0">
@@ -278,14 +280,13 @@ export default function RiderHomePage() {
                       {v.headsign || v.routeLongName || `Route ${v.routeId ?? "Unassigned"}`}
                     </div>
                     <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
-                      <Bus size={12} className="inline mr-1" />
-                      #{v.fleetNumber} · {formatVehicleStatusLine(v)}
+                      {v.fleetNumber}. {formatVehicleStatusLine(v)}
                     </div>
                   </div>
                 </div>
                 <div className="text-right shrink-0">
                   <div className="font-bold text-sm tabular-nums">{v.distanceMeters} m</div>
-                  <div className="text-xs font-semibold" style={{ color: "var(--primary)" }}>I&apos;m on this →</div>
+                  <div className="text-sm font-bold" style={{ color: "var(--accent)" }}>I am on this</div>
                 </div>
               </button>
             ))}
@@ -299,18 +300,17 @@ export default function RiderHomePage() {
         {!position ? (
           <div className="sh-card p-6 text-sm space-y-3">
             <p className="m-0" style={{ color: "var(--text-muted)" }}>
-              Turn on location to automatically see the closest stops, approaching buses/trains, and live on-board stop
-              tracking.
+              Turn on location to see the closest stops, vehicles coming your way, and your stops while you ride.
             </p>
             <button type="button" className="sh-btn sh-btn-primary" onClick={startWatching}>
-              <Compass size={15} /> Enable live location
+              <Compass size={18} aria-hidden="true" /> Turn on location
             </button>
           </div>
         ) : nearbyLoading ? (
           <p className="text-sm" style={{ color: "var(--text-muted)" }}>Finding stops near you…</p>
         ) : (nearby?.nearbyStops.length ?? 0) === 0 ? (
           <div className="sh-card p-5 text-sm" style={{ color: "var(--text-muted)" }}>
-            No Guelph Transit, TTC, GO Transit, or Thunder Bay Transit stops found within 1 km of your location.
+            There are no GO, Guelph, Thunder Bay or TTC stops within 1 km of you. Use Plan a trip to search by name instead.
           </div>
         ) : (
           <div className="sh-card divide-y" style={{ borderColor: "var(--border)" }}>
@@ -318,16 +318,16 @@ export default function RiderHomePage() {
               <Link
                 key={`${s.agencyId}-${s.stopId}`}
                 to={`/stops/${s.agencyId}/${encodeURIComponent(s.stopId)}`}
-                className="p-4 flex items-center justify-between gap-3 no-underline hover:bg-[var(--surface)]"
+                className="py-3 flex items-center justify-between gap-3 no-underline"
+                style={{ color: "var(--ink)", borderBottom: "1px solid var(--rule)" }}
               >
                 <div className="min-w-0 space-y-1">
                   <div className="font-bold text-sm flex items-center gap-2">
-                    <MapPin size={14} style={{ color: "var(--signal)" }} className="shrink-0" />
                     <span className="truncate">{s.name}</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {s.routes.slice(0, 8).map((r) => (
-                      <span key={r} className="sh-pill sh-pill-muted font-bold tabular-nums">
+                      <span key={r} className="sh-narrow text-base sh-muted">
                         {r}
                       </span>
                     ))}
@@ -336,7 +336,7 @@ export default function RiderHomePage() {
                 <div className="text-right shrink-0">
                   <div className="font-bold text-sm tabular-nums">{s.walkMinutes} min walk</div>
                   <div className="text-xs tabular-nums" style={{ color: "var(--text-muted)" }}>
-                    {s.distanceMeters} m · {s.agencyId.toUpperCase()}
+                    {s.distanceMeters} m, {agencyShortName(s.agencyId)}
                   </div>
                 </div>
               </Link>
