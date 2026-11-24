@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Bus, History as HistoryIcon, Map as MapIcon, MapPin, Menu, Route as RouteIcon, Search, Star, WifiOff, X } from "lucide-react";
+import { Bus, History as HistoryIcon, Map as MapIcon, MapPin, Menu, Navigation, Route as RouteIcon, Search, Star, WifiOff, X } from "lucide-react";
 import { apiJson, type AgencySummary } from "../lib/api";
 import { usePreferences, type ThemeMode } from "../lib/preferences";
 import { usePwaInstall } from "../hooks/usePwaInstall";
@@ -17,13 +17,16 @@ interface SearchResponse {
   };
 }
 
-const NAV_ITEMS = [
+const DESKTOP_NAV_ITEMS = [
   { to: "/", label: "Map", end: true, Icon: MapIcon },
+  { to: "/plan", label: "Plan", end: false, Icon: Navigation },
   { to: "/routes", label: "Routes", end: false, Icon: RouteIcon },
   { to: "/vehicles", label: "Vehicles", end: false, Icon: Bus },
   { to: "/stops", label: "Stops", end: false, Icon: MapPin },
   { to: "/history", label: "History", end: false, Icon: HistoryIcon },
 ];
+
+const MOBILE_NAV_ITEMS = DESKTOP_NAV_ITEMS.slice(0, 5);
 
 function AgencySwitcher({
   options,
@@ -176,7 +179,7 @@ export function Layout() {
         setSearchText(e.target.value);
         setSearchOpen(true);
       }}
-      placeholder="Fleet number, route, stop or trip"
+      placeholder="Search fleet, route, stop…"
       aria-label="Search"
       enterKeyHint="search"
       className="sh-input w-full pl-10"
@@ -267,6 +270,7 @@ export function Layout() {
     <>
       <Link to="/simple">Simple view</Link>
       <Link to="/plan">Plan a trip</Link>
+      <Link to="/history">History &amp; replay</Link>
       <Link to="/alerts">Service alerts</Link>
       <Link to="/status">Feed status</Link>
       {!isStandalone && <Link to="/install">Save as app</Link>}
@@ -305,7 +309,7 @@ export function Layout() {
           </Link>
 
           <nav aria-label="Primary" className="sh-nav">
-            {NAV_ITEMS.map((item) => (
+            {DESKTOP_NAV_ITEMS.map((item) => (
               <NavLink key={item.to} to={item.to} end={item.end}>
                 {item.label}
               </NavLink>
@@ -313,7 +317,7 @@ export function Layout() {
           </nav>
 
           {/* Inline search (desktop) */}
-          <div ref={searchRef} className="relative hidden lg:block w-[280px]">
+          <div ref={searchRef} className="relative hidden lg:block w-[250px] xl:w-[280px]">
             <Search
               size={18}
               aria-hidden="true"
@@ -486,7 +490,7 @@ export function Layout() {
 
       <div className="sh-tabbar-spacer shrink-0" aria-hidden="true" />
       <nav aria-label="Primary" className="sh-tabbar">
-        {NAV_ITEMS.map(({ to, label, end, Icon }) => (
+        {MOBILE_NAV_ITEMS.map(({ to, label, end, Icon }) => (
           <NavLink key={to} to={to} end={end}>
             <Icon size={22} strokeWidth={2} aria-hidden="true" />
             {label}

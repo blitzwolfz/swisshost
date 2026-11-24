@@ -355,3 +355,417 @@ export function resolveFleetNumber(
   const vehicleId = cleanedId.replace(/[^a-zA-Z0-9._-]/g, "_");
   return { vehicleId, fleetNumber };
 }
+
+// ---------------------------------------------------------------------------
+// Time-aware Trip Planner: upcoming buses from TripUpdates, live GPS & schedules
+// ---------------------------------------------------------------------------
+
+export interface PlanStopSeqItem {
+  stopId: string;
+  stopSequence: number;
+  lat: number;
+  lon: number;
+  arrivalSec: number | null;
+  departureSec: number | null;
+}
+
+export interface PlanRoutePattern {
+  tripId: string;
+  routeId: string;
+  directionId: number | null;
+  headsign: string | null;
+  stops: PlanStopSeqItem[];
+}
+
+export interface PlanLiveVehicleInput {
+  vehicleId: string;
+  fleetNumber: string;
+  routeId: string | null;
+  tripId: string | null;
+  patternTripId?: string | null;
+  headsign?: string | null;
+  lat: number;
+  lon: number;
+  bearingDeg: number | null;
+  speedMps: number | null;
+  scheduleDeviationSec: number | null;
+  stopId: string | null;
+  currentStatus: string | null;
+  freshness: "fresh" | "delayed" | "stale";
+}
+
+export interface PlanTripUpdateInput {
+  tripId: string;
+  routeId: string | null;
+  vehicleId: string | null;
+  delaySec: number | null;
+  scheduleRelationship: string;
+  stopUpdates: Array<{
+    stopId?: string | null;
+    stopSequence?: number | null;
+    arrivalTime?: string | null;
+    departureTime?: string | null;
+    arrivalDelaySec?: number | null;
+    departureDelaySec?: number | null;
+    scheduleRelationship?: string | null;
+  }>;
+}
+
+export interface PlanScheduledDepartureInput {
+  tripId: string;
+  routeId: string;
+  headsign: string | null;
+  originDepartureSec: number;
+  destArrivalSec: number | null;
+  stopsCount: number | null;
+}
+
+export interface PlannedUpcomingBus {
+  departureTime: string;
+  arrivalTime: string;
+  etaMinutes: number;
+  waitMinutes: number;
+  rideMinutes: number;
+  isLive: boolean;
+  source: "trip_update" | "live_gps" | "scheduled";
+  vehicleId: string | null;
+  fleetNumber: string | null;
+  tripId: string | null;
+  headsign: string | null;
+  stopsAway: number | null;
+  delaySec: number | null;
+}
+
+export interface ComputeUpcomingBusesResult {
+  directionValid: boolean;
+  baselineRideMinutes: number;
+  stopsCount: number | null;
+  defaultHeadsign: string | null;
+  upcomingBuses: PlannedUpcomingBus[];
+}
+
+export function computeUpcomingBusesForLeg(input: {
+  nowMs: number;
+  departAtMs: number;
+  readyToBoardMs: number;
+  departServiceSeconds: number;
+  fromStop: { stopId: string; lat: number; lon: number };
+  toStop: { stopId: string; lat: number; lon: number };
+  routeId: string;
+  defaultSpeedMps: number;
+  patterns: PlanRoutePattern[];
+  liveVehicles: PlanLiveVehicleInput[];
+  tripUpdates: PlanTripUpdateInput[];
+  scheduledDepartures: PlanScheduledDepartureInput[];
+  maxResults?: number;
+}): ComputeUpcomingBusesResult {
+  const {
+    nowMs,
+    departAtMs,
+    readyToBoardMs,
+    departServiceSeconds,
+    fromStop,
+    toStop,
+    routeId,
+    defaultSpeedMps,
+    patterns,
+    liveVehicles,
+    tripUpdates,
+    scheduledDepartures,
+    maxResults = 4,
+  } = input;
+
+  const routePatterns = patterns.filter((p) => p.routeId === routeId);
+  const forwardPatterns: Array<{ pattern: PlanRoutePattern; origIdx: number; destIdx: number }> = [];
+  let sawReversePattern = false;
+
+  for (const p of routePatterns) {
+    const origIdx = p.stops.findIndex((s) => s.stopId === fromStop.stopId);
+    const destIdx = p.stops.findIndex((s) => s.stopId === toStop.stopId);
+    if (origIdx !== -1 && destIdx !== -1) {
+      if (origIdx < destIdx) {
+        forwardPatterns.push({ pattern: p, origIdx, destIdx });
+      } else if (origIdx > destIdx) {
+        sawReversePattern = true;
+      }
+    }
+  }
+
+  const directionValid = forwardPatterns.length > 0 || !sawReversePattern;
+
+  // Baseline ride minutes & stop count from canonical forward pattern if available
+  const directDist = Math.round(haversineMeters(fromStop.lat, fromStop.lon, toStop.lat, toStop.lon) * 1.25);
+  let baselineRideMinutes = Math.max(2, Math.round(directDist / defaultSpeedMps / 60));
+  let stopsCount: number | null = null;
+  let defaultHeadsign: string | null = null;
+
+  const bestForward = forwardPatterns[0];
+  if (bestForward) {
+    stopsCount = bestForward.destIdx - bestForward.origIdx;
+    defaultHeadsign = bestForward.pattern.headsign || null;
+    const oItem = bestForward.pattern.stops[bestForward.origIdx]!;
+    const dItem = bestForward.pattern.stops[bestForward.destIdx]!;
+    const oSec = oItem.departureSec ?? oItem.arrivalSec;
+    const dSec = dItem.arrivalSec ?? dItem.departureSec;
+    if (oSec !== null && dSec !== null && dSec > oSec) {
+      baselineRideMinutes = Math.max(1, Math.round((dSec - oSec) / 60));
+    } else {
+      let pathDist = 0;
+      for (let i = bestForward.origIdx + 1; i <= bestForward.destIdx; i++) {
+        const prev = bestForward.pattern.stops[i - 1]!;
+        const curr = bestForward.pattern.stops[i]!;
+        pathDist += Math.max(60, haversineMeters(prev.lat, prev.lon, curr.lat, curr.lon));
+      }
+      baselineRideMinutes = Math.max(2, Math.round((pathDist / defaultSpeedMps + stopsCount * 16) / 60));
+    }
+  }
+
+  if (!directionValid) {
+    return {
+      directionValid: false,
+      baselineRideMinutes,
+      stopsCount,
+      defaultHeadsign,
+      upcomingBuses: [],
+    };
+  }
+
+  const routeVehicles = liveVehicles.filter((v) => v.routeId === routeId && v.freshness !== "stale");
+  const vehByTrip = new Map<string, PlanLiveVehicleInput>();
+  const vehById = new Map<string, PlanLiveVehicleInput>();
+  for (const v of routeVehicles) {
+    if (v.tripId) vehByTrip.set(v.tripId, v);
+    vehById.set(v.vehicleId, v);
+  }
+
+  const candidates: PlannedUpcomingBus[] = [];
+  const usedVehicleIds = new Set<string>();
+  const usedTripIds = new Set<string>();
+  const windowMinMs = readyToBoardMs - 60_000;
+  const windowMaxMs = readyToBoardMs + 3 * 3600_000;
+
+  const buildBus = (
+    depMs: number,
+    rideMin: number,
+    meta: Omit<PlannedUpcomingBus, "departureTime" | "arrivalTime" | "etaMinutes" | "waitMinutes" | "rideMinutes">
+  ): PlannedUpcomingBus => {
+    const arrMs = depMs + rideMin * 60_000;
+    return {
+      ...meta,
+      departureTime: new Date(depMs).toISOString(),
+      arrivalTime: new Date(arrMs).toISOString(),
+      etaMinutes: Math.max(0, Math.round((depMs - departAtMs) / 60_000)),
+      waitMinutes: Math.max(0, Math.round((depMs - readyToBoardMs) / 60_000)),
+      rideMinutes: rideMin,
+    };
+  };
+
+  // 1. Live GTFS-RT TripUpdates (within ±3h of now)
+  const nearRealTime = Math.abs(readyToBoardMs - nowMs) <= 3 * 3600_000;
+  if (nearRealTime) {
+    for (const tu of tripUpdates) {
+      if (tu.routeId !== routeId) continue;
+      if (tu.scheduleRelationship === "CANCELED") continue;
+      const origIdx = tu.stopUpdates.findIndex((u) => u.stopId === fromStop.stopId);
+      if (origIdx === -1) continue;
+      const origUpd = tu.stopUpdates[origIdx]!;
+      if (origUpd.scheduleRelationship === "SKIPPED") continue;
+
+      const destIdx = tu.stopUpdates.findIndex((u) => u.stopId === toStop.stopId);
+      // If destination appears BEFORE origin in the same trip update, wrong direction
+      if (destIdx !== -1 && destIdx <= origIdx) continue;
+
+      const depIso = origUpd.departureTime ?? origUpd.arrivalTime;
+      if (!depIso) continue;
+      const depMs = Date.parse(depIso);
+      if (!Number.isFinite(depMs) || depMs < windowMinMs || depMs > windowMaxMs) continue;
+
+      let rideMin = baselineRideMinutes;
+      if (destIdx > origIdx) {
+        const destUpd = tu.stopUpdates[destIdx]!;
+        const arrIso = destUpd.arrivalTime ?? destUpd.departureTime;
+        const arrMs = arrIso ? Date.parse(arrIso) : NaN;
+        if (Number.isFinite(arrMs) && arrMs > depMs) {
+          rideMin = Math.max(1, Math.round((arrMs - depMs) / 60_000));
+        }
+      }
+
+      const matchedVeh = vehByTrip.get(tu.tripId) ?? (tu.vehicleId ? vehById.get(tu.vehicleId) : undefined);
+      usedTripIds.add(tu.tripId);
+      if (matchedVeh) usedVehicleIds.add(matchedVeh.vehicleId);
+
+      candidates.push(
+        buildBus(depMs, rideMin, {
+          isLive: true,
+          source: "trip_update",
+          vehicleId: matchedVeh?.vehicleId ?? tu.vehicleId ?? null,
+          fleetNumber: matchedVeh?.fleetNumber ?? null,
+          tripId: tu.tripId,
+          headsign: matchedVeh?.headsign ?? defaultHeadsign,
+          stopsAway: null,
+          delaySec: origUpd.departureDelaySec ?? origUpd.arrivalDelaySec ?? tu.delaySec ?? null,
+        })
+      );
+    }
+  }
+
+  // 2. Live GPS vehicles currently approaching fromStop (relevant when departing within ~75 min of now)
+  const gpsRelevant = readyToBoardMs >= nowMs - 5 * 60_000 && readyToBoardMs <= nowMs + 75 * 60_000;
+  if (gpsRelevant) {
+    const patternByTripId = new Map(routePatterns.map((p) => [p.tripId, p]));
+
+    for (const v of routeVehicles) {
+      if (usedVehicleIds.has(v.vehicleId)) continue;
+      if (v.tripId && usedTripIds.has(v.tripId)) continue;
+
+      // Determine pattern for this vehicle
+      const vehPattern = v.patternTripId ? patternByTripId.get(v.patternTripId) : undefined;
+      if (vehPattern) {
+        const oI = vehPattern.stops.findIndex((s) => s.stopId === fromStop.stopId);
+        const dI = vehPattern.stops.findIndex((s) => s.stopId === toStop.stopId);
+        // Explicitly going the opposite direction
+        if (oI !== -1 && dI !== -1 && oI >= dI) continue;
+      }
+
+      const activeForward =
+        (vehPattern
+          ? forwardPatterns.find((fp) => fp.pattern.tripId === vehPattern.tripId)
+          : undefined) ?? bestForward;
+
+      const speed = v.speedMps && v.speedMps > 2.2 ? Math.min(22, v.speedMps) : defaultSpeedMps;
+
+      if (activeForward) {
+        const { pattern, origIdx } = activeForward;
+        let vehIdx = v.stopId ? pattern.stops.findIndex((s) => s.stopId === v.stopId) : -1;
+        let nearestDist = Infinity;
+        if (vehIdx === -1) {
+          for (let i = 0; i < pattern.stops.length; i++) {
+            const d = haversineMeters(v.lat, v.lon, pattern.stops[i]!.lat, pattern.stops[i]!.lon);
+            if (d < nearestDist) {
+              nearestDist = d;
+              vehIdx = i;
+            }
+          }
+          if (nearestDist > 1200) continue;
+        }
+
+        // Skip buses that have already passed our boarding stop
+        if (vehIdx > origIdx) continue;
+
+        const stopsAway = origIdx - vehIdx;
+        let cumDist = haversineMeters(v.lat, v.lon, pattern.stops[vehIdx]!.lat, pattern.stops[vehIdx]!.lon);
+        for (let i = vehIdx + 1; i <= origIdx; i++) {
+          const prev = pattern.stops[i - 1]!;
+          const curr = pattern.stops[i]!;
+          cumDist += Math.max(70, haversineMeters(prev.lat, prev.lon, curr.lat, curr.lon));
+        }
+
+        const atStopNow = stopsAway === 0 && (v.currentStatus === "STOPPED_AT" || cumDist < 75);
+        const etaSec = atStopNow ? 0 : Math.max(30, Math.round(cumDist / speed + stopsAway * 18));
+        const depMs = nowMs + etaSec * 1000;
+        if (depMs < windowMinMs || depMs > readyToBoardMs + 90 * 60_000) continue;
+
+        usedVehicleIds.add(v.vehicleId);
+        if (v.tripId) usedTripIds.add(v.tripId);
+
+        candidates.push(
+          buildBus(depMs, baselineRideMinutes, {
+            isLive: true,
+            source: "live_gps",
+            vehicleId: v.vehicleId,
+            fleetNumber: v.fleetNumber,
+            tripId: v.tripId,
+            headsign: v.headsign ?? pattern.headsign ?? defaultHeadsign,
+            stopsAway,
+            delaySec: v.scheduleDeviationSec,
+          })
+        );
+      } else if (routePatterns.length === 0) {
+        // Fallback when static patterns aren't imported yet: estimate from GPS proximity & bearing
+        const dist = haversineMeters(v.lat, v.lon, fromStop.lat, fromStop.lon);
+        if (dist > 8000) continue;
+        if (v.bearingDeg !== null && dist > 150) {
+          const toStopBearing = bearingDegrees(v.lat, v.lon, fromStop.lat, fromStop.lon);
+          if (angularDifferenceDeg(v.bearingDeg, toStopBearing) > 105) continue;
+        }
+        const etaSec = dist < 75 ? 0 : Math.max(30, Math.round((dist * 1.25) / speed));
+        const depMs = nowMs + etaSec * 1000;
+        if (depMs < windowMinMs || depMs > readyToBoardMs + 90 * 60_000) continue;
+
+        usedVehicleIds.add(v.vehicleId);
+        if (v.tripId) usedTripIds.add(v.tripId);
+
+        candidates.push(
+          buildBus(depMs, baselineRideMinutes, {
+            isLive: true,
+            source: "live_gps",
+            vehicleId: v.vehicleId,
+            fleetNumber: v.fleetNumber,
+            tripId: v.tripId,
+            headsign: v.headsign ?? defaultHeadsign,
+            stopsAway: null,
+            delaySec: v.scheduleDeviationSec,
+          })
+        );
+      }
+    }
+  }
+
+  // 3. Scheduled stop_times departures relative to target departure time
+  for (const sd of scheduledDepartures) {
+    if (sd.routeId !== routeId) continue;
+    if (usedTripIds.has(sd.tripId)) continue;
+    const depMs = departAtMs + (sd.originDepartureSec - departServiceSeconds) * 1000;
+    if (depMs < windowMinMs || depMs > windowMaxMs) continue;
+
+    const rideMin =
+      sd.destArrivalSec !== null && sd.destArrivalSec > sd.originDepartureSec
+        ? Math.max(1, Math.round((sd.destArrivalSec - sd.originDepartureSec) / 60))
+        : baselineRideMinutes;
+
+    candidates.push(
+      buildBus(depMs, rideMin, {
+        isLive: false,
+        source: "scheduled",
+        vehicleId: null,
+        fleetNumber: null,
+        tripId: sd.tripId,
+        headsign: sd.headsign ?? defaultHeadsign,
+        stopsAway: null,
+        delaySec: null,
+      })
+    );
+  }
+
+  // Sort chronologically, preferring live entries when timestamps are close
+  candidates.sort((a, b) => {
+    const dt = Date.parse(a.departureTime) - Date.parse(b.departureTime);
+    if (Math.abs(dt) > 15_000) return dt;
+    return Number(b.isLive) - Number(a.isLive);
+  });
+
+  // Deduplicate scheduled duplicates that sit within 90s of an already-included live bus
+  const deduped: PlannedUpcomingBus[] = [];
+  for (const c of candidates) {
+    const cMs = Date.parse(c.departureTime);
+    if (!c.isLive && deduped.some((d) => d.isLive && Math.abs(Date.parse(d.departureTime) - cMs) <= 90_000)) {
+      continue;
+    }
+    if (c.vehicleId && deduped.some((d) => d.vehicleId === c.vehicleId)) {
+      continue;
+    }
+    if (c.tripId && deduped.some((d) => d.tripId === c.tripId)) {
+      continue;
+    }
+    deduped.push(c);
+    if (deduped.length >= maxResults) break;
+  }
+
+  return {
+    directionValid: true,
+    baselineRideMinutes,
+    stopsCount,
+    defaultHeadsign,
+    upcomingBuses: deduped,
+  };
+}

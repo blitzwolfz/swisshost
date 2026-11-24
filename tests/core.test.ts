@@ -13,6 +13,7 @@ import {
 } from "@swisshost/analytics";
 import { createTursoD1Adapter, splitSqlStatements } from "@swisshost/database";
 import {
+  computeUpcomingBusesForLeg,
   detectStopEvent,
   evaluateTripMatch,
   getLocalServiceContext,
@@ -302,5 +303,132 @@ describe("Database — Turso Hrana v2 D1-Compatible Adapter", () => {
     `);
     expect(stmts).toHaveLength(2);
     expect(stmts[0]).toContain("'x;y'");
+  });
+});
+
+describe("Trip Planner — Time-Aware Upcoming Buses & Direction Filtering", () => {
+  const baseNow = Date.parse("2026-11-24T18:00:00.000Z"); // 1:00 PM EST (serviceSeconds = 13 * 3600 = 46800)
+  const serviceSecondsAtNow = 13 * 3600;
+
+  const pattern = {
+    tripId: "T99-NB",
+    routeId: "99",
+    directionId: 0,
+    headsign: "Northbound Woodlawn",
+    stops: [
+      { stopId: "S1", stopSequence: 1, lat: 43.520, lon: -80.240, arrivalSec: 46500, departureSec: 46500 },
+      { stopId: "S2", stopSequence: 2, lat: 43.530, lon: -80.240, arrivalSec: 46800, departureSec: 46800 },
+      { stopId: "S3", stopSequence: 3, lat: 43.545, lon: -80.240, arrivalSec: 47280, departureSec: 47280 },
+      { stopId: "S4", stopSequence: 4, lat: 43.560, lon: -80.240, arrivalSec: 47700, departureSec: 47700 },
+    ],
+  };
+
+  it("ranks live approaching buses and upcoming scheduled buses after the rider reaches the stop", () => {
+    const res = computeUpcomingBusesForLeg({
+      nowMs: baseNow,
+      departAtMs: baseNow,
+      readyToBoardMs: baseNow + 3 * 60_000, // 3 min walk to S2
+      departServiceSeconds: serviceSecondsAtNow,
+      fromStop: { stopId: "S2", lat: 43.530, lon: -80.240 },
+      toStop: { stopId: "S4", lat: 43.560, lon: -80.240 },
+      routeId: "99",
+      defaultSpeedMps: 6.2,
+      patterns: [pattern],
+      liveVehicles: [
+        // Bus 214 is at S1, approaching S2 (~1.1km away -> ~3-4 min -> catchable!)
+        {
+          vehicleId: "214",
+          fleetNumber: "214",
+          routeId: "99",
+          tripId: "LIVE-1",
+          patternTripId: "T99-NB",
+          headsign: "Northbound Woodlawn",
+          lat: 43.520,
+          lon: -80.240,
+          bearingDeg: 0,
+          speedMps: 6.5,
+          scheduleDeviationSec: 0,
+          stopId: "S1",
+          currentStatus: "IN_TRANSIT_TO",
+          freshness: "fresh",
+        },
+        // Bus 215 already passed S2 (at S3) -> must NOT be shown as approaching!
+        {
+          vehicleId: "215",
+          fleetNumber: "215",
+          routeId: "99",
+          tripId: "LIVE-2",
+          patternTripId: "T99-NB",
+          headsign: "Northbound Woodlawn",
+          lat: 43.545,
+          lon: -80.240,
+          bearingDeg: 0,
+          speedMps: 6.5,
+          scheduleDeviationSec: 0,
+          stopId: "S3",
+          currentStatus: "IN_TRANSIT_TO",
+          freshness: "fresh",
+        },
+      ],
+      tripUpdates: [
+        {
+          tripId: "TU-NEXT",
+          routeId: "99",
+          vehicleId: "220",
+          delaySec: 60,
+          scheduleRelationship: "SCHEDULED",
+          stopUpdates: [
+            { stopId: "S2", departureTime: new Date(baseNow + 14 * 60_000).toISOString() },
+            { stopId: "S4", arrivalTime: new Date(baseNow + 29 * 60_000).toISOString() },
+          ],
+        },
+      ],
+      scheduledDepartures: [
+        {
+          tripId: "SCHED-1",
+          routeId: "99",
+          headsign: "Northbound Woodlawn",
+          originDepartureSec: serviceSecondsAtNow + 28 * 60,
+          destArrivalSec: serviceSecondsAtNow + 43 * 60,
+          stopsCount: 2,
+        },
+      ],
+    });
+
+    expect(res.directionValid).toBe(true);
+    expect(res.stopsCount).toBe(2);
+    expect(res.baselineRideMinutes).toBe(15); // (47700 - 46800) / 60 = 15 min
+    expect(res.upcomingBuses).toHaveLength(3);
+    // Bus 215 (already passed S2) must be excluded
+    expect(res.upcomingBuses.map((b) => b.vehicleId)).not.toContain("215");
+    // Chronological order: live GPS Bus 214 (~3m) -> TripUpdate (14m) -> Scheduled (28m)
+    expect(res.upcomingBuses[0]!.source).toBe("live_gps");
+    expect(res.upcomingBuses[0]!.fleetNumber).toBe("214");
+    expect(res.upcomingBuses[0]!.stopsAway).toBe(1);
+    expect(res.upcomingBuses[1]!.source).toBe("trip_update");
+    expect(res.upcomingBuses[1]!.etaMinutes).toBe(14);
+    expect(res.upcomingBuses[2]!.source).toBe("scheduled");
+    expect(res.upcomingBuses[2]!.isLive).toBe(false);
+    expect(res.upcomingBuses[2]!.etaMinutes).toBe(28);
+  });
+
+  it("rejects reverse-direction stop pairs when canonical pattern runs opposite way", () => {
+    const res = computeUpcomingBusesForLeg({
+      nowMs: baseNow,
+      departAtMs: baseNow,
+      readyToBoardMs: baseNow + 2 * 60_000,
+      departServiceSeconds: serviceSecondsAtNow,
+      fromStop: { stopId: "S4", lat: 43.560, lon: -80.240 },
+      toStop: { stopId: "S2", lat: 43.530, lon: -80.240 },
+      routeId: "99",
+      defaultSpeedMps: 6.2,
+      patterns: [pattern],
+      liveVehicles: [],
+      tripUpdates: [],
+      scheduledDepartures: [],
+    });
+
+    expect(res.directionValid).toBe(false);
+    expect(res.upcomingBuses).toHaveLength(0);
   });
 });

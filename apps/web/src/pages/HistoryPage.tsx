@@ -279,7 +279,8 @@ export default function HistoryPage() {
                 value={playIndex}
                 onChange={(e) => setPlayIndex(Number(e.target.value))}
                 aria-label="Replay timeline scrubber"
-                className="w-full accent-[#b91c1c]"
+                className="w-full"
+                style={{ accentColor: "var(--accent)" }}
               />
             </div>
           </div>

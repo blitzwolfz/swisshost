@@ -11,7 +11,7 @@ import {
   SlidersHorizontal,
   Star,
 } from "lucide-react";
-import { TransitMap } from "../components/TransitMap";
+import { TransitMap, type MapLabelMode } from "../components/TransitMap";
 import { BottomSheet } from "../components/BottomSheet";
 import { DepartureRow, EmptyState, LiveLegend, RouteBadge, vehicleNounFor } from "../components/Transit";
 import { useLiveAgency } from "../hooks/useLiveAgency";
@@ -73,6 +73,7 @@ export default function LiveMapPage() {
   const [fleetFilter, setFleetFilter] = useState("");
   const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh" | "stale">("all");
   const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
+  const [labelMode, setLabelMode] = useState<MapLabelMode>("both");
   const [showFilters, setShowFilters] = useState(false);
   const [followSelected, setFollowSelected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -128,13 +129,14 @@ export default function LiveMapPage() {
   const zoom = activeAgency?.defaultZoom ?? (agencyId === "all" ? 9.5 : 12);
 
   const filteredVehicles = useMemo(() => {
-    return live.vehicles.filter((v) => {
+    const list = live.vehicles.filter((v) => {
       if (fleetFilter) {
         const q = fleetFilter.toLowerCase();
         if (
           !v.fleetNumber.toLowerCase().includes(q) &&
           !v.vehicleId.toLowerCase().includes(q) &&
-          !(v.routeId?.toLowerCase().includes(q) ?? false)
+          !(v.routeId?.toLowerCase().includes(q) ?? false) &&
+          !(v.routeShortName?.toLowerCase().includes(q) ?? false)
         ) {
           return false;
         }
@@ -145,7 +147,24 @@ export default function LiveMapPage() {
       if (assignedFilter === "unassigned" && (v.routeId || v.tripId)) return false;
       return true;
     });
+    // Put live in-service buses first, then unassigned live buses, then stale vehicles
+    return [...list].sort((a, b) => {
+      const rank = (v: LiveVehicle) =>
+        (v.freshness === "stale" ? 2 : 0) + (v.routeId || v.tripId ? 0 : 1);
+      const rDiff = rank(a) - rank(b);
+      if (rDiff !== 0) return rDiff;
+      const routeCmp = (a.routeShortName ?? a.routeId ?? "zzz").localeCompare(
+        b.routeShortName ?? b.routeId ?? "zzz",
+        undefined,
+        { numeric: true }
+      );
+      if (routeCmp !== 0) return routeCmp;
+      return a.fleetNumber.localeCompare(b.fleetNumber, undefined, { numeric: true });
+    });
   }, [live.vehicles, fleetFilter, freshnessFilter, assignedFilter]);
+
+  const activeFilterCount =
+    (fleetFilter ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0) + (assignedFilter !== "all" ? 1 : 0);
 
   const liveCount = filteredVehicles.filter((v) => v.freshness !== "stale").length;
 
@@ -434,6 +453,21 @@ export default function LiveMapPage() {
           <option value="unassigned">Not on a route</option>
         </select>
       </div>
+      <div>
+        <label htmlFor="map-label-mode" className="sh-label">
+          Map labels
+        </label>
+        <select
+          id="map-label-mode"
+          value={labelMode}
+          onChange={(e) => setLabelMode(e.target.value as MapLabelMode)}
+          className="sh-input"
+        >
+          <option value="both">Bus # + route</option>
+          <option value="fleet">Bus # only</option>
+          <option value="off">Bus icons only</option>
+        </select>
+      </div>
       <button
         type="button"
         className="sh-btn"
@@ -477,6 +511,22 @@ export default function LiveMapPage() {
         {filteredVehicles.slice(0, 200).map((v) => {
           const stale = v.freshness === "stale";
           const d = formatDelay(v.scheduleDeviationSec);
+          const rightText = stale
+            ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}`
+            : d.tone !== "muted"
+              ? d.text
+              : v.speedMps !== null
+                ? v.speedMps < 0.5
+                  ? "Stopped"
+                  : formatSpeed(v.speedMps, units)
+                : `${v.ageSeconds}s ago`;
+          const rightClass = stale
+            ? "sh-sched"
+            : d.tone === "err"
+              ? "font-bold"
+              : d.tone !== "muted"
+                ? "font-bold"
+                : "sh-muted";
           return (
             <li key={`${v.agencyId}-${v.sourceVehicleId}`}>
               <button
@@ -499,14 +549,17 @@ export default function LiveMapPage() {
                     {v.headsign ? v.headsign : v.routeId ? `Route ${v.routeShortName ?? v.routeId}` : "Not on a route"}
                   </span>
                   <span className="sh-dep-sub">
-                    {noun} {v.fleetNumber}
+                    {noun} #{v.fleetNumber}
                     {agencyId === "all" ? `, ${agencyShortName(v.agencyId)}` : ""}
-                    {v.stopName ? `. ${formatVehicleStatusLine(v)}` : ""}
+                    {v.stopName ? ` · ${formatVehicleStatusLine(v)}` : ""}
                   </span>
                 </span>
                 <span className="sh-dep-leader" aria-hidden="true" />
-                <span className={`text-sm text-right shrink-0 ${stale ? "sh-sched" : "font-bold"}`}>
-                  {stale ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}` : d.text}
+                <span
+                  className={`text-sm text-right shrink-0 tabular-nums ${rightClass}`}
+                  style={!stale && d.tone === "err" ? { color: "var(--danger)" } : undefined}
+                >
+                  {rightText}
                 </span>
               </button>
             </li>
@@ -517,7 +570,7 @@ export default function LiveMapPage() {
 
   const stopPanel = selectedStopId ? (
     <section aria-labelledby="stop-title" className="space-y-2">
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2 pr-10 lg:pr-0">
         <div className="min-w-0">
           <h2 id="stop-title" className="m-0 text-2xl font-extrabold leading-tight">
             {stopData?.stop.name ?? (stopLoading ? "Loading stop…" : "Stop")}
@@ -776,18 +829,41 @@ export default function LiveMapPage() {
       onSelectStop={(s) => selectStop(s)}
       userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
       followSelected={followSelected}
+      labelMode={labelMode}
       heightClass="h-full w-full"
       rounded={false}
     />
   );
 
   const countChip = (
-    <div className="sh-chip" role="status" aria-live="polite">
-      <b>{liveCount}</b>
-      <span className="leading-tight">
-        {liveCount === 1 ? "vehicle" : "vehicles"} live
-        <span className="block text-xs sh-muted">{feedNote}</span>
-      </span>
+    <div className="flex items-center gap-2">
+      <div className="sh-chip" role="status" aria-live="polite">
+        <b>{liveCount}</b>
+        <span className="leading-tight">
+          {liveCount === 1 ? noun.toLowerCase() : `${noun.toLowerCase() === "bus" ? "buses" : "vehicles"}`} live
+          <span className="block text-xs sh-muted">{feedNote}</span>
+        </span>
+      </div>
+      <div role="group" aria-label="Map bus labels" className="sh-seg bg-[var(--paper)]">
+        {(
+          [
+            ["both", "# + Rt"],
+            ["fleet", "Bus #"],
+            ["off", "Icons"],
+          ] as const
+        ).map(([m, text]) => (
+          <button
+            key={m}
+            type="button"
+            aria-pressed={labelMode === m}
+            onClick={() => setLabelMode(m)}
+            className="text-xs px-2.5"
+            style={{ minHeight: 44 }}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -806,25 +882,28 @@ export default function LiveMapPage() {
             {vehiclePanel ??
               stopPanel ?? (
                 <section aria-labelledby="live-title" className="space-y-3">
-                  <h2 id="live-title" className="m-0 text-2xl font-extrabold leading-tight">
-                    Live vehicles, {agencyLabel}
-                  </h2>
-                  {routeSelect}
-                  <p className="m-0 text-sm sh-muted">
-                    {routeFilter
-                      ? "Pick a stop on the route to see its next departures."
-                      : "Choose a route to show its stops, then pick a stop for departures."}
-                  </p>
-                  <div className="flex justify-end">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <h2 id="live-title" className="m-0 text-2xl font-extrabold leading-tight">
+                      Live {noun === "Bus" ? "buses" : "vehicles"}, {agencyLabel}
+                    </h2>
+                  </div>
+                  <div className="flex items-stretch gap-2">
+                    {routeSelect && <div className="flex-1 min-w-0">{routeSelect}</div>}
                     <button
                       type="button"
-                      className="sh-btn"
+                      className={`sh-btn shrink-0 ${showFilters || activeFilterCount > 0 ? "sh-btn-primary" : ""}`}
                       aria-expanded={showFilters}
                       onClick={() => setShowFilters((s) => !s)}
                     >
-                      <SlidersHorizontal size={18} aria-hidden="true" /> Filters
+                      <SlidersHorizontal size={18} aria-hidden="true" />
+                      Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
                     </button>
                   </div>
+                  <p className="m-0 text-sm sh-muted">
+                    {routeFilter
+                      ? "Pick a stop on the route to see its next departures, or click any bus."
+                      : "Click any bus on the map to follow it, or choose a route to show its stops."}
+                  </p>
                   {showFilters && filtersForm}
                   {nothingReporting && filteredVehicles.length > 0 && emptyNotice}
                   {vehicleList}
@@ -877,7 +956,7 @@ export default function LiveMapPage() {
               <div className="flex-1 min-w-0" style={{ borderLeft: "var(--border-w) solid var(--line)" }}>
                 {React.cloneElement(routeSelect, {
                   className: "sh-input w-full min-w-0 border-0",
-                  style: { background: "transparent" },
+                  style: { backgroundColor: "transparent" },
                 })}
               </div>
             )}

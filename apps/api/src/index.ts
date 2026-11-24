@@ -13,7 +13,15 @@ import {
   computeScheduleAdherence,
   predictStopArrival,
 } from "@swisshost/analytics";
-import { formatSecondsToClock, getLocalServiceContext, haversineMeters } from "@swisshost/transit-core";
+import {
+  computeUpcomingBusesForLeg,
+  formatSecondsToClock,
+  getLocalServiceContext,
+  haversineMeters,
+  type PlanRoutePattern,
+  type PlanScheduledDepartureInput,
+  type PlannedUpcomingBus,
+} from "@swisshost/transit-core";
 import { createAdminApp } from "../../admin/src/index";
 import { FeedSchedulerDO } from "../../collector/src/feed-scheduler-do";
 import { AgencyLiveDO } from "../../live/src/agency-live-do";
@@ -867,7 +875,7 @@ app.get("/api/v1/nearby", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Route Finder (Direct & 1-Transfer Transit Routing across Guelph, TTC, GO)
+// Route Finder (Time-Aware Direct & 1-Transfer Transit Routing across Ontario)
 // ---------------------------------------------------------------------------
 app.get("/api/v1/plan", async (c) => {
   const fromLat = Number(c.req.query("fromLat"));
@@ -875,6 +883,7 @@ app.get("/api/v1/plan", async (c) => {
   const toLat = Number(c.req.query("toLat"));
   const toLon = Number(c.req.query("toLon"));
   const agencyFilter = c.req.query("agency") || undefined;
+  const departAtParam = c.req.query("departAt") || "";
 
   if (
     !Number.isFinite(fromLat) ||
@@ -887,6 +896,11 @@ app.get("/api/v1/plan", async (c) => {
       400
     );
   }
+
+  const nowMs = Date.now();
+  const parsedDepart = departAtParam ? Date.parse(departAtParam) : NaN;
+  const departAtMs = Number.isFinite(parsedDepart) ? parsedDepart : nowMs;
+  const departAtIso = new Date(departAtMs).toISOString();
 
   const directDist = haversineMeters(fromLat, fromLon, toLat, toLon);
   const walkSearchM = 1200;
@@ -936,55 +950,109 @@ app.get("/api/v1/plan", async (c) => {
     queryStopsNear(toLat, toLon),
   ]);
 
+  type PlanLeg = {
+    mode: "walk" | "transit";
+    agencyId?: string;
+    routeId?: string;
+    routeShortName?: string;
+    routeLongName?: string | null;
+    routeColor?: string | null;
+    fromName: string;
+    fromStopId?: string;
+    toName: string;
+    toStopId?: string;
+    distanceMeters: number;
+    minutes: number;
+    waitMinutes?: number;
+    departureTime?: string | null;
+    arrivalTime?: string | null;
+    stopsCount?: number | null;
+    activeVehicles?: number;
+    nearestVehicleId?: string | null;
+    nearestFleetNumber?: string | null;
+    nearestHeadsign?: string | null;
+    upcomingBuses?: PlannedUpcomingBus[];
+  };
+
   type PlanOption = {
     id: string;
     kind: "direct" | "transfer";
     agencyId: string;
+    serviceStatus: "live" | "scheduled" | "no_upcoming";
+    leaveAt: string;
+    arriveAt: string;
+    nextDepartureAt: string | null;
     totalMinutes: number;
     walkMinutes: number;
+    waitMinutes: number;
     rideMinutes: number;
-    legs: Array<{
-      mode: "walk" | "transit";
-      agencyId?: string;
-      routeId?: string;
-      routeShortName?: string;
-      routeLongName?: string | null;
-      routeColor?: string | null;
-      fromName: string;
-      fromStopId?: string;
-      toName: string;
-      toStopId?: string;
-      distanceMeters: number;
-      minutes: number;
-      activeVehicles?: number;
-      nearestVehicleId?: string | null;
-      nearestFleetNumber?: string | null;
-      nearestHeadsign?: string | null;
-    }>;
+    legs: PlanLeg[];
   };
 
-  const options: PlanOption[] = [];
-  const seenDirectRoutes = new Set<string>();
-
-  // Preload lookups & live stats for agencies involved
+  // Preload lookups, live vehicles, live TripUpdates, timezone & active static version per involved agency
   const involvedAgencies = Array.from(
     new Set([...originStops.map((s) => s.agencyId), ...destStops.map((s) => s.agencyId)])
   );
-  const agencyInfo = new Map<
-    string,
-    { lookups: AgencyStaticLookups; vehicles: Awaited<ReturnType<AgencyLiveDO["getSnapshot"]>>["vehicles"] }
-  >();
+
+  type EnrichedPlanVehicle = Awaited<ReturnType<AgencyLiveDO["getSnapshot"]>>["vehicles"][number] & {
+    routeShortName?: string | null;
+    routeLongName?: string | null;
+    routeColor?: string | null;
+    headsign?: string | null;
+    stopName?: string | null;
+    patternTripId?: string | null;
+  };
+
+  type AgencyPlanData = {
+    timezone: string;
+    serviceDate: string;
+    departServiceSeconds: number;
+    versionId: string | null;
+    lookups: AgencyStaticLookups;
+    vehicles: EnrichedPlanVehicle[];
+    tripUpdates: Awaited<ReturnType<AgencyLiveDO["getTripUpdates"]>>;
+    patterns: PlanRoutePattern[];
+  };
+
+  const agencyInfo = new Map<string, AgencyPlanData>();
   await Promise.all(
     involvedAgencies.map(async (ag) => {
-      const [lookups, snap] = await Promise.all([
+      const [agencyRow, versionId, lookups, snap] = await Promise.all([
+        c.env.DB.prepare("SELECT timezone FROM agencies WHERE id = ?").bind(ag).first<{ timezone: string }>(),
+        getActiveVersionId(c.env.DB, ag),
         getAgencyStaticLookups(c.env, ag),
         c.env.AGENCY_LIVE.getByName(ag).getSnapshot({ agencyId: ag }),
       ]);
-      agencyInfo.set(ag, { lookups, vehicles: snap.vehicles });
+      const tz = agencyRow?.timezone ?? "America/Toronto";
+      const departCtx = getLocalServiceContext(new Date(departAtMs), tz);
+      const liveCtx = getLocalServiceContext(new Date(nowMs), tz);
+      const tripUpdates = await c.env.AGENCY_LIVE.getByName(ag)
+        .getTripUpdates({ serviceDate: liveCtx.serviceDate })
+        .catch(() => []);
+      const enrichedVehicles = snap.vehicles.map((v) => enrichVehicleWithLookups(v, lookups));
+      agencyInfo.set(ag, {
+        timezone: tz,
+        serviceDate: departCtx.serviceDate,
+        departServiceSeconds: departCtx.serviceSeconds,
+        versionId,
+        lookups,
+        vehicles: enrichedVehicles,
+        tripUpdates,
+        patterns: [],
+      });
     })
   );
 
-  // 1. Direct routes connecting an origin stop to a destination stop in the same agency
+  // Collect direct route candidates first (allow up to 2 stop-pairings per route so opposite-side stops can be direction-checked)
+  type DirectCandidate = {
+    agencyId: string;
+    routeId: string;
+    oStop: (typeof originStops)[number];
+    dStop: (typeof destStops)[number];
+  };
+  const directCandidates: DirectCandidate[] = [];
+  const directPairCounts = new Map<string, number>();
+
   for (const oStop of originStops) {
     for (const dStop of destStops) {
       if (oStop.agencyId !== dStop.agencyId || oStop.stopId === dStop.stopId) continue;
@@ -992,76 +1060,26 @@ app.get("/api/v1/plan", async (c) => {
       for (const routeId of oStop.routes) {
         if (!destRouteSet.has(routeId)) continue;
         const key = `${oStop.agencyId}:${routeId}`;
-        if (seenDirectRoutes.has(key)) continue;
-        seenDirectRoutes.add(key);
-
-        const info = agencyInfo.get(oStop.agencyId);
-        const rm = info?.lookups.routes.get(routeId);
-        const routeVehicles = (info?.vehicles ?? [])
-          .filter((v) => v.routeId === routeId)
-          .map((v) => ({
-            v: enrichVehicleWithLookups(v, info!.lookups),
-            dist: haversineMeters(v.lat, v.lon, oStop.lat, oStop.lon),
-          }))
-          .sort((a, b) => a.dist - b.dist);
-
-        const rideDist = Math.round(haversineMeters(oStop.lat, oStop.lon, dStop.lat, dStop.lon) * 1.25);
-        const speedMps = oStop.agencyId === "go" ? 16 : 6.2;
-        const rideMinutes = Math.max(2, Math.round(rideDist / speedMps / 60));
-        const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
-        const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
-        const walkMinutes = walkStartMin + walkEndMin;
-
-        options.push({
-          id: `direct-${oStop.agencyId}-${routeId}`,
-          kind: "direct",
-          agencyId: oStop.agencyId,
-          totalMinutes: walkMinutes + rideMinutes + 4,
-          walkMinutes,
-          rideMinutes,
-          legs: [
-            {
-              mode: "walk",
-              fromName: "Origin",
-              toName: oStop.name,
-              toStopId: oStop.stopId,
-              distanceMeters: oStop.distMeters,
-              minutes: walkStartMin,
-            },
-            {
-              mode: "transit",
-              agencyId: oStop.agencyId,
-              routeId,
-              routeShortName: rm?.shortName ?? routeId,
-              routeLongName: rm?.longName ?? null,
-              routeColor: rm?.color ?? null,
-              fromName: oStop.name,
-              fromStopId: oStop.stopId,
-              toName: dStop.name,
-              toStopId: dStop.stopId,
-              distanceMeters: rideDist,
-              minutes: rideMinutes,
-              activeVehicles: routeVehicles.length,
-              nearestVehicleId: routeVehicles[0]?.v.vehicleId ?? null,
-              nearestFleetNumber: routeVehicles[0]?.v.fleetNumber ?? null,
-              nearestHeadsign: routeVehicles[0]?.v.headsign ?? null,
-            },
-            {
-              mode: "walk",
-              fromName: dStop.name,
-              fromStopId: dStop.stopId,
-              toName: "Destination",
-              distanceMeters: dStop.distMeters,
-              minutes: walkEndMin,
-            },
-          ],
-        });
+        const count = directPairCounts.get(key) ?? 0;
+        if (count >= 4) continue;
+        directPairCounts.set(key, count + 1);
+        directCandidates.push({ agencyId: oStop.agencyId, routeId, oStop, dStop });
       }
     }
   }
 
-  // 2. If fewer than 3 direct routes, search 1-transfer connections via shared hub stops along the midpoint
-  if (options.length < 3 && originStops.length > 0 && destStops.length > 0) {
+  // Also collect 1-transfer candidates if fewer than 4 distinct direct routes exist
+  type TransferCandidate = {
+    agencyId: string;
+    route1: string;
+    route2: string;
+    oStop: (typeof originStops)[number];
+    hub: { stopId: string; name: string; lat: number; lon: number };
+    dStop: (typeof destStops)[number];
+  };
+  const transferCandidates: TransferCandidate[] = [];
+
+  if (directPairCounts.size < 4 && originStops.length > 0 && destStops.length > 0) {
     const midLat = (fromLat + toLat) / 2;
     const midLon = (fromLon + toLon) / 2;
     const spanDeg = Math.max(0.025, Math.min(0.18, directDist / 111_000 / 1.8));
@@ -1112,87 +1130,475 @@ app.get("/api/v1/plan", async (c) => {
 
       const oStop = originByRoute.get(`${hub.agency_id}:${matchingOrigin}`)!;
       const dStop = destByRoute.get(`${hub.agency_id}:${matchingDest}`)!;
-      const info = agencyInfo.get(hub.agency_id);
-      const rm1 = info?.lookups.routes.get(matchingOrigin);
-      const rm2 = info?.lookups.routes.get(matchingDest);
+      if (oStop.stopId === hub.stop_id || dStop.stopId === hub.stop_id) continue;
 
-      const leg1Dist = Math.round(haversineMeters(oStop.lat, oStop.lon, hub.lat, hub.lon) * 1.25);
-      const leg2Dist = Math.round(haversineMeters(hub.lat, hub.lon, dStop.lat, dStop.lon) * 1.25);
-      const speedMps = hub.agency_id === "go" ? 16 : 6.2;
-      const leg1Min = Math.max(2, Math.round(leg1Dist / speedMps / 60));
-      const leg2Min = Math.max(2, Math.round(leg2Dist / speedMps / 60));
-      const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
-      const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
-      const walkMinutes = walkStartMin + walkEndMin;
-
-      options.push({
-        id: `transfer-${hub.agency_id}-${matchingOrigin}-${matchingDest}`,
-        kind: "transfer",
+      transferCandidates.push({
         agencyId: hub.agency_id,
-        totalMinutes: walkMinutes + leg1Min + leg2Min + 9,
-        walkMinutes,
-        rideMinutes: leg1Min + leg2Min,
-        legs: [
-          {
-            mode: "walk",
-            fromName: "Origin",
-            toName: oStop.name,
-            toStopId: oStop.stopId,
-            distanceMeters: oStop.distMeters,
-            minutes: walkStartMin,
-          },
-          {
-            mode: "transit",
-            agencyId: hub.agency_id,
-            routeId: matchingOrigin,
-            routeShortName: rm1?.shortName ?? matchingOrigin,
-            routeLongName: rm1?.longName ?? null,
-            routeColor: rm1?.color ?? null,
-            fromName: oStop.name,
-            fromStopId: oStop.stopId,
-            toName: hub.name,
-            toStopId: hub.stop_id,
-            distanceMeters: leg1Dist,
-            minutes: leg1Min,
-            activeVehicles: (info?.vehicles ?? []).filter((v) => v.routeId === matchingOrigin).length,
-          },
-          {
-            mode: "transit",
-            agencyId: hub.agency_id,
-            routeId: matchingDest,
-            routeShortName: rm2?.shortName ?? matchingDest,
-            routeLongName: rm2?.longName ?? null,
-            routeColor: rm2?.color ?? null,
-            fromName: hub.name,
-            fromStopId: hub.stop_id,
-            toName: dStop.name,
-            toStopId: dStop.stopId,
-            distanceMeters: leg2Dist,
-            minutes: leg2Min,
-            activeVehicles: (info?.vehicles ?? []).filter((v) => v.routeId === matchingDest).length,
-          },
-          {
-            mode: "walk",
-            fromName: dStop.name,
-            fromStopId: dStop.stopId,
-            toName: "Destination",
-            distanceMeters: dStop.distMeters,
-            minutes: walkEndMin,
-          },
-        ],
+        route1: matchingOrigin,
+        route2: matchingDest,
+        oStop,
+        hub: { stopId: hub.stop_id, name: hub.name, lat: hub.lat, lon: hub.lon },
+        dStop,
       });
-      if (options.length >= 8) break;
+      if (transferCandidates.length >= 6) break;
     }
   }
 
+  // Batch-load canonical route patterns (trips + stop_times) & scheduled departures for candidate routes/stops
+  const candidateRoutesByAgency = new Map<string, Set<string>>();
+  const candidateStopPairsByAgency = new Map<string, Map<string, { fromStopId: string; toStopId: string; routeId: string }>>();
+  const addCandidate = (ag: string, routeId: string, fromStopId: string, toStopId: string) => {
+    let rSet = candidateRoutesByAgency.get(ag);
+    if (!rSet) {
+      rSet = new Set();
+      candidateRoutesByAgency.set(ag, rSet);
+    }
+    rSet.add(routeId);
+    let pMap = candidateStopPairsByAgency.get(ag);
+    if (!pMap) {
+      pMap = new Map();
+      candidateStopPairsByAgency.set(ag, pMap);
+    }
+    pMap.set(`${routeId}|${fromStopId}|${toStopId}`, { fromStopId, toStopId, routeId });
+  };
+
+  for (const dc of directCandidates) addCandidate(dc.agencyId, dc.routeId, dc.oStop.stopId, dc.dStop.stopId);
+  for (const tc of transferCandidates) {
+    addCandidate(tc.agencyId, tc.route1, tc.oStop.stopId, tc.hub.stopId);
+    addCandidate(tc.agencyId, tc.route2, tc.hub.stopId, tc.dStop.stopId);
+  }
+
+  const scheduledByPairKey = new Map<string, PlanScheduledDepartureInput[]>();
+
+  await Promise.all(
+    Array.from(candidateRoutesByAgency.entries()).map(async ([ag, routeSet]) => {
+      const info = agencyInfo.get(ag);
+      if (!info?.versionId || routeSet.size === 0) return;
+      const routeIds = Array.from(routeSet).slice(0, 16);
+      const placeholders = routeIds.map(() => "?").join(",");
+
+      // Fetch canonical pattern trips (up to 4 per route) + their ordered stops
+      const tripRows = await c.env.DB.prepare(
+        `SELECT trip_id, route_id, direction_id, headsign
+         FROM trips
+         WHERE agency_id = ? AND version_id = ? AND route_id IN (${placeholders})
+         LIMIT 60`
+      )
+        .bind(ag, info.versionId, ...routeIds)
+        .all<{ trip_id: string; route_id: string; direction_id: number | null; headsign: string | null }>();
+
+      if (tripRows.results.length > 0) {
+        const tripIds = tripRows.results.map((t) => t.trip_id);
+        const tPlaceholders = tripIds.map(() => "?").join(",");
+        const stRows = await c.env.DB.prepare(
+          `SELECT st.trip_id, st.stop_sequence, st.stop_id, st.arrival_sec, st.departure_sec, s.lat, s.lon
+           FROM stop_times st
+           JOIN stops s ON s.agency_id = st.agency_id AND s.version_id = st.version_id AND s.stop_id = st.stop_id
+           WHERE st.agency_id = ? AND st.version_id = ? AND st.trip_id IN (${tPlaceholders})
+           ORDER BY st.trip_id, st.stop_sequence ASC`
+        )
+          .bind(ag, info.versionId, ...tripIds)
+          .all<{
+            trip_id: string;
+            stop_sequence: number;
+            stop_id: string;
+            arrival_sec: number | null;
+            departure_sec: number | null;
+            lat: number;
+            lon: number;
+          }>();
+
+        const stopsByTrip = new Map<string, PlanRoutePattern["stops"]>();
+        for (const r of stRows.results) {
+          let arr = stopsByTrip.get(r.trip_id);
+          if (!arr) {
+            arr = [];
+            stopsByTrip.set(r.trip_id, arr);
+          }
+          arr.push({
+            stopId: r.stop_id,
+            stopSequence: r.stop_sequence,
+            lat: r.lat,
+            lon: r.lon,
+            arrivalSec: r.arrival_sec,
+            departureSec: r.departure_sec,
+          });
+        }
+
+        info.patterns = tripRows.results
+          .map((t) => ({
+            tripId: t.trip_id,
+            routeId: t.route_id,
+            directionId: t.direction_id,
+            headsign: t.headsign,
+            stops: stopsByTrip.get(t.trip_id) ?? [],
+          }))
+          .filter((p) => p.stops.length > 0);
+      }
+
+      // Fetch scheduled departures within the next 3 hours from boarding stops
+      const pairs = Array.from(candidateStopPairsByAgency.get(ag)?.values() ?? []);
+      const boardingStopIds = Array.from(new Set(pairs.map((p) => p.fromStopId))).slice(0, 20);
+      if (boardingStopIds.length > 0) {
+        const sPlaceholders = boardingStopIds.map(() => "?").join(",");
+        const minSec = info.departServiceSeconds - 120;
+        const maxSec = info.departServiceSeconds + 10_800;
+        const schedRows = await c.env.DB.prepare(
+          `SELECT st1.trip_id, st1.stop_id as orig_stop, st1.stop_sequence as orig_seq,
+                  st1.departure_sec as orig_dep, st2.stop_id as dest_stop,
+                  st2.stop_sequence as dest_seq, st2.arrival_sec as dest_arr,
+                  t.route_id, t.headsign
+           FROM stop_times st1
+           JOIN trips t ON t.agency_id = st1.agency_id AND t.version_id = st1.version_id AND t.trip_id = st1.trip_id
+           JOIN stop_times st2 ON st2.agency_id = st1.agency_id AND st2.version_id = st1.version_id
+                AND st2.trip_id = st1.trip_id AND st2.stop_sequence > st1.stop_sequence
+           WHERE st1.agency_id = ? AND st1.version_id = ?
+             AND st1.stop_id IN (${sPlaceholders})
+             AND st1.departure_sec >= ? AND st1.departure_sec <= ?
+           ORDER BY st1.departure_sec ASC
+           LIMIT 240`
+        )
+          .bind(ag, info.versionId, ...boardingStopIds, minSec, maxSec)
+          .all<{
+            trip_id: string;
+            orig_stop: string;
+            orig_seq: number;
+            orig_dep: number;
+            dest_stop: string;
+            dest_seq: number;
+            dest_arr: number | null;
+            route_id: string;
+            headsign: string | null;
+          }>();
+
+        for (const r of schedRows.results) {
+          const pk = `${ag}|${r.route_id}|${r.orig_stop}|${r.dest_stop}`;
+          let arr = scheduledByPairKey.get(pk);
+          if (!arr) {
+            arr = [];
+            scheduledByPairKey.set(pk, arr);
+          }
+          arr.push({
+            tripId: r.trip_id,
+            routeId: r.route_id,
+            headsign: r.headsign,
+            originDepartureSec: r.orig_dep,
+            destArrivalSec: r.dest_arr,
+            stopsCount: r.dest_seq - r.orig_seq,
+          });
+        }
+      }
+    })
+  );
+
+  const options: PlanOption[] = [];
+  const bestDirectByRoute = new Map<string, PlanOption>();
+
+  // 1. Evaluate direct candidates with real current-time upcoming buses
+  for (const dc of directCandidates) {
+    const { agencyId: ag, routeId, oStop, dStop } = dc;
+    const info = agencyInfo.get(ag);
+    if (!info) continue;
+    const rm = info.lookups.routes.get(routeId);
+    const speedMps = ag === "go" ? 16 : 6.2;
+    const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
+    const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
+    const walkMinutes = walkStartMin + walkEndMin;
+    const readyToBoardMs = departAtMs + walkStartMin * 60_000;
+
+    const legCalc = computeUpcomingBusesForLeg({
+      nowMs,
+      departAtMs,
+      readyToBoardMs,
+      departServiceSeconds: info.departServiceSeconds,
+      fromStop: { stopId: oStop.stopId, lat: oStop.lat, lon: oStop.lon },
+      toStop: { stopId: dStop.stopId, lat: dStop.lat, lon: dStop.lon },
+      routeId,
+      defaultSpeedMps: speedMps,
+      patterns: info.patterns,
+      liveVehicles: info.vehicles,
+      tripUpdates: info.tripUpdates,
+      scheduledDepartures: scheduledByPairKey.get(`${ag}|${routeId}|${oStop.stopId}|${dStop.stopId}`) ?? [],
+      maxResults: 4,
+    });
+
+    if (!legCalc.directionValid) continue;
+
+    const routeVehicles = info.vehicles
+      .filter((v) => v.routeId === routeId && v.freshness !== "stale")
+      .map((v) => ({ v, dist: haversineMeters(v.lat, v.lon, oStop.lat, oStop.lon) }))
+      .sort((a, b) => a.dist - b.dist);
+
+    const nextBus = legCalc.upcomingBuses[0] ?? null;
+    const rideMinutes = nextBus?.rideMinutes ?? legCalc.baselineRideMinutes;
+    const waitMinutes = nextBus ? nextBus.waitMinutes : 0;
+    const leaveAtIso = departAtIso;
+    const arriveMs = nextBus
+      ? Date.parse(nextBus.arrivalTime) + walkEndMin * 60_000
+      : departAtMs + (walkMinutes + rideMinutes) * 60_000;
+    const totalMinutes = Math.max(walkMinutes + rideMinutes, Math.round((arriveMs - departAtMs) / 60_000));
+    const serviceStatus: PlanOption["serviceStatus"] = nextBus
+      ? nextBus.isLive
+        ? "live"
+        : "scheduled"
+      : "no_upcoming";
+
+    const rideDist = Math.round(haversineMeters(oStop.lat, oStop.lon, dStop.lat, dStop.lon) * 1.25);
+
+    const option: PlanOption = {
+      id: `direct-${ag}-${routeId}-${oStop.stopId}`,
+      kind: "direct",
+      agencyId: ag,
+      serviceStatus,
+      leaveAt: leaveAtIso,
+      arriveAt: new Date(arriveMs).toISOString(),
+      nextDepartureAt: nextBus?.departureTime ?? null,
+      totalMinutes,
+      walkMinutes,
+      waitMinutes,
+      rideMinutes,
+      legs: [
+        {
+          mode: "walk",
+          fromName: "Origin",
+          toName: oStop.name,
+          toStopId: oStop.stopId,
+          distanceMeters: oStop.distMeters,
+          minutes: walkStartMin,
+          departureTime: leaveAtIso,
+          arrivalTime: new Date(readyToBoardMs).toISOString(),
+        },
+        {
+          mode: "transit",
+          agencyId: ag,
+          routeId,
+          routeShortName: rm?.shortName ?? routeId,
+          routeLongName: rm?.longName ?? null,
+          routeColor: rm?.color ?? null,
+          fromName: oStop.name,
+          fromStopId: oStop.stopId,
+          toName: dStop.name,
+          toStopId: dStop.stopId,
+          distanceMeters: rideDist,
+          minutes: rideMinutes,
+          waitMinutes,
+          departureTime: nextBus?.departureTime ?? null,
+          arrivalTime: nextBus?.arrivalTime ?? null,
+          stopsCount: legCalc.stopsCount,
+          activeVehicles: routeVehicles.length,
+          nearestVehicleId: nextBus?.vehicleId ?? routeVehicles[0]?.v.vehicleId ?? null,
+          nearestFleetNumber: nextBus?.fleetNumber ?? routeVehicles[0]?.v.fleetNumber ?? null,
+          nearestHeadsign: nextBus?.headsign ?? legCalc.defaultHeadsign ?? routeVehicles[0]?.v.headsign ?? null,
+          upcomingBuses: legCalc.upcomingBuses,
+        },
+        {
+          mode: "walk",
+          fromName: dStop.name,
+          fromStopId: dStop.stopId,
+          toName: "Destination",
+          distanceMeters: dStop.distMeters,
+          minutes: walkEndMin,
+          departureTime: nextBus?.arrivalTime ?? null,
+          arrivalTime: new Date(arriveMs).toISOString(),
+        },
+      ],
+    };
+
+    const routeKey = `${ag}:${routeId}`;
+    const existing = bestDirectByRoute.get(routeKey);
+    const score = (opt: PlanOption) =>
+      (opt.serviceStatus === "live" ? 0 : opt.serviceStatus === "scheduled" ? 1 : 2) * 100_000 + opt.totalMinutes;
+    if (!existing || score(option) < score(existing)) {
+      bestDirectByRoute.set(routeKey, option);
+    }
+  }
+
+  for (const opt of bestDirectByRoute.values()) {
+    options.push(opt);
+  }
+
+  // 2. Evaluate 1-transfer candidates with chained timing across both legs
+  for (const tc of transferCandidates) {
+    const { agencyId: ag, route1, route2, oStop, hub, dStop } = tc;
+    const info = agencyInfo.get(ag);
+    if (!info) continue;
+    const rm1 = info.lookups.routes.get(route1);
+    const rm2 = info.lookups.routes.get(route2);
+    const speedMps = ag === "go" ? 16 : 6.2;
+    const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
+    const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
+    const walkMinutes = walkStartMin + walkEndMin;
+    const readyLeg1Ms = departAtMs + walkStartMin * 60_000;
+
+    const leg1Calc = computeUpcomingBusesForLeg({
+      nowMs,
+      departAtMs,
+      readyToBoardMs: readyLeg1Ms,
+      departServiceSeconds: info.departServiceSeconds,
+      fromStop: { stopId: oStop.stopId, lat: oStop.lat, lon: oStop.lon },
+      toStop: { stopId: hub.stopId, lat: hub.lat, lon: hub.lon },
+      routeId: route1,
+      defaultSpeedMps: speedMps,
+      patterns: info.patterns,
+      liveVehicles: info.vehicles,
+      tripUpdates: info.tripUpdates,
+      scheduledDepartures: scheduledByPairKey.get(`${ag}|${route1}|${oStop.stopId}|${hub.stopId}`) ?? [],
+      maxResults: 3,
+    });
+    if (!leg1Calc.directionValid) continue;
+
+    const bus1 = leg1Calc.upcomingBuses[0] ?? null;
+    const leg1Min = bus1?.rideMinutes ?? leg1Calc.baselineRideMinutes;
+    const leg1ArriveMs = bus1
+      ? Date.parse(bus1.arrivalTime)
+      : readyLeg1Ms + leg1Min * 60_000;
+    const readyLeg2Ms = leg1ArriveMs + 3 * 60_000; // 3 min transfer buffer
+
+    const leg2Calc = computeUpcomingBusesForLeg({
+      nowMs,
+      departAtMs,
+      readyToBoardMs: readyLeg2Ms,
+      departServiceSeconds: info.departServiceSeconds,
+      fromStop: { stopId: hub.stopId, lat: hub.lat, lon: hub.lon },
+      toStop: { stopId: dStop.stopId, lat: dStop.lat, lon: dStop.lon },
+      routeId: route2,
+      defaultSpeedMps: speedMps,
+      patterns: info.patterns,
+      liveVehicles: info.vehicles,
+      tripUpdates: info.tripUpdates,
+      scheduledDepartures: scheduledByPairKey.get(`${ag}|${route2}|${hub.stopId}|${dStop.stopId}`) ?? [],
+      maxResults: 3,
+    });
+    if (!leg2Calc.directionValid) continue;
+
+    const bus2 = leg2Calc.upcomingBuses[0] ?? null;
+    const leg2Min = bus2?.rideMinutes ?? leg2Calc.baselineRideMinutes;
+    const wait1 = bus1 ? bus1.waitMinutes : 0;
+    const wait2 = bus2 ? Math.max(0, Math.round((Date.parse(bus2.departureTime) - leg1ArriveMs) / 60_000)) : 3;
+    const totalWait = wait1 + wait2;
+    const finalArriveMs = bus2
+      ? Date.parse(bus2.arrivalTime) + walkEndMin * 60_000
+      : readyLeg2Ms + (leg2Min + walkEndMin) * 60_000;
+    const totalMinutes = Math.max(
+      walkMinutes + leg1Min + leg2Min,
+      Math.round((finalArriveMs - departAtMs) / 60_000)
+    );
+
+    const hasAnyUpcoming = Boolean(bus1 || bus2);
+    const hasLive = Boolean(bus1?.isLive || bus2?.isLive);
+    const serviceStatus: PlanOption["serviceStatus"] = hasLive
+      ? "live"
+      : hasAnyUpcoming
+        ? "scheduled"
+        : "no_upcoming";
+
+    const leg1Dist = Math.round(haversineMeters(oStop.lat, oStop.lon, hub.lat, hub.lon) * 1.25);
+    const leg2Dist = Math.round(haversineMeters(hub.lat, hub.lon, dStop.lat, dStop.lon) * 1.25);
+    const active1 = info.vehicles.filter((v) => v.routeId === route1 && v.freshness !== "stale").length;
+    const active2 = info.vehicles.filter((v) => v.routeId === route2 && v.freshness !== "stale").length;
+
+    options.push({
+      id: `transfer-${ag}-${route1}-${route2}`,
+      kind: "transfer",
+      agencyId: ag,
+      serviceStatus,
+      leaveAt: departAtIso,
+      arriveAt: new Date(finalArriveMs).toISOString(),
+      nextDepartureAt: bus1?.departureTime ?? null,
+      totalMinutes,
+      walkMinutes,
+      waitMinutes: totalWait,
+      rideMinutes: leg1Min + leg2Min,
+      legs: [
+        {
+          mode: "walk",
+          fromName: "Origin",
+          toName: oStop.name,
+          toStopId: oStop.stopId,
+          distanceMeters: oStop.distMeters,
+          minutes: walkStartMin,
+          departureTime: departAtIso,
+          arrivalTime: new Date(readyLeg1Ms).toISOString(),
+        },
+        {
+          mode: "transit",
+          agencyId: ag,
+          routeId: route1,
+          routeShortName: rm1?.shortName ?? route1,
+          routeLongName: rm1?.longName ?? null,
+          routeColor: rm1?.color ?? null,
+          fromName: oStop.name,
+          fromStopId: oStop.stopId,
+          toName: hub.name,
+          toStopId: hub.stopId,
+          distanceMeters: leg1Dist,
+          minutes: leg1Min,
+          waitMinutes: wait1,
+          departureTime: bus1?.departureTime ?? null,
+          arrivalTime: bus1?.arrivalTime ?? null,
+          stopsCount: leg1Calc.stopsCount,
+          activeVehicles: active1,
+          nearestVehicleId: bus1?.vehicleId ?? null,
+          nearestFleetNumber: bus1?.fleetNumber ?? null,
+          nearestHeadsign: bus1?.headsign ?? leg1Calc.defaultHeadsign ?? null,
+          upcomingBuses: leg1Calc.upcomingBuses,
+        },
+        {
+          mode: "transit",
+          agencyId: ag,
+          routeId: route2,
+          routeShortName: rm2?.shortName ?? route2,
+          routeLongName: rm2?.longName ?? null,
+          routeColor: rm2?.color ?? null,
+          fromName: hub.name,
+          fromStopId: hub.stopId,
+          toName: dStop.name,
+          toStopId: dStop.stopId,
+          distanceMeters: leg2Dist,
+          minutes: leg2Min,
+          waitMinutes: wait2,
+          departureTime: bus2?.departureTime ?? null,
+          arrivalTime: bus2?.arrivalTime ?? null,
+          stopsCount: leg2Calc.stopsCount,
+          activeVehicles: active2,
+          nearestVehicleId: bus2?.vehicleId ?? null,
+          nearestFleetNumber: bus2?.fleetNumber ?? null,
+          nearestHeadsign: bus2?.headsign ?? leg2Calc.defaultHeadsign ?? null,
+          upcomingBuses: leg2Calc.upcomingBuses,
+        },
+        {
+          mode: "walk",
+          fromName: dStop.name,
+          fromStopId: dStop.stopId,
+          toName: "Destination",
+          distanceMeters: dStop.distMeters,
+          minutes: walkEndMin,
+          departureTime: bus2?.arrivalTime ?? null,
+          arrivalTime: new Date(finalArriveMs).toISOString(),
+        },
+      ],
+    });
+  }
+
+  // Sort: live/scheduled upcoming routes first, then by arrival time (with slight preference for direct over transfer)
+  const statusRank = (s: PlanOption["serviceStatus"]) => (s === "live" ? 0 : s === "scheduled" ? 1 : 2);
   options.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "direct" ? -1 : 1;
-    return a.totalMinutes - b.totalMinutes;
+    const sDiff = statusRank(a.serviceStatus) - statusRank(b.serviceStatus);
+    if (sDiff !== 0) return sDiff;
+    const effA = a.totalMinutes + (a.kind === "transfer" ? 5 : 0);
+    const effB = b.totalMinutes + (b.kind === "transfer" ? 5 : 0);
+    if (effA !== effB) return effA - effB;
+    return a.kind === "direct" ? -1 : 1;
   });
+
+  const primaryTz = involvedAgencies[0] ? agencyInfo.get(involvedAgencies[0])?.timezone ?? "America/Toronto" : "America/Toronto";
 
   return c.json({
     from: { lat: fromLat, lon: fromLon },
     to: { lat: toLat, lon: toLon },
+    departAt: departAtIso,
+    serverTime: new Date(nowMs).toISOString(),
+    timezone: primaryTz,
     directDistanceMeters: Math.round(directDist),
     options: options.slice(0, 6),
     originStopsChecked: originStops.length,

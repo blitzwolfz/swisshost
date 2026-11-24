@@ -207,9 +207,9 @@ export function VehiclesPage() {
                         <span className="sh-muted">Not on a route</span>
                       )}
                     </td>
-                    <td className="hidden md:table-cell">{lv?.headsign ?? <span className="sh-muted">Unknown</span>}</td>
+                    <td className="hidden md:table-cell">{lv?.headsign ?? <span className="sh-muted">—</span>}</td>
                     <td className="hidden md:table-cell">
-                      {reportingNow && lv?.stopName ? lv.stopName : <span className="sh-muted">None</span>}
+                      {reportingNow && lv?.stopName ? lv.stopName : <span className="sh-muted">—</span>}
                     </td>
                     <td className="whitespace-nowrap">
                       {reportingNow ? (
@@ -218,16 +218,22 @@ export function VehiclesPage() {
                         <span className="sh-sched">Last seen {formatClock(v.last_seen_at)}</span>
                       )}
                     </td>
-                    <td className="hidden lg:table-cell tabular-nums whitespace-nowrap">{formatSpeed(lv?.speedMps ?? v.speed_mps, units)}</td>
+                    <td className="hidden lg:table-cell tabular-nums whitespace-nowrap">
+                      {(lv?.speedMps ?? v.speed_mps) !== null ? (
+                        formatSpeed(lv?.speedMps ?? v.speed_mps, units)
+                      ) : (
+                        <span className="sh-muted">—</span>
+                      )}
+                    </td>
                     <td className="hidden lg:table-cell whitespace-nowrap" style={d.tone === "err" ? { color: "var(--danger)", fontWeight: 700 } : undefined}>
-                      {d.text}
+                      {d.tone === "muted" ? <span className="sh-muted">—</span> : d.text}
                     </td>
                     <td className="hidden lg:table-cell sh-muted">
                       {v.manufacturer || v.model
                         ? `${v.year ?? ""} ${v.manufacturer ?? ""} ${v.model ?? ""}`.trim()
                         : v.vehicle_type !== "unknown"
                           ? v.vehicle_type
-                          : "Unknown"}
+                          : "—"}
                     </td>
                   </tr>
                 );

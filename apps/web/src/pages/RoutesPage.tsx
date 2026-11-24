@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { History as HistoryIcon, Star } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
+import { RouteBadge } from "../components/Transit";
 import { apiJson, formatDelay, formatSpeed, type LiveVehicle } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
 import { agencyName } from "../lib/agencies";
@@ -110,12 +111,10 @@ export function RoutesPage() {
                       to={`/routes/${effectiveAgency}/${encodeURIComponent(r.routeId)}`}
                       className="no-underline hover:no-underline"
                     >
-                      <span
-                        className="sh-route-shield text-white"
-                        style={{ backgroundColor: routeColor(effectiveAgency, r.routeId, r.color) }}
-                      >
-                        {r.shortName}
-                      </span>
+                      <RouteBadge
+                        label={r.shortName}
+                        color={routeColor(effectiveAgency, r.routeId, r.color)}
+                      />
                     </Link>
                   </td>
                   <td>
@@ -142,11 +141,13 @@ export function RoutesPage() {
                         {r.activeAlerts} {r.activeAlerts === 1 ? "alert" : "alerts"}
                       </span>
                     ) : (
-                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>None</span>
+                      <span className="text-xs sh-muted">—</span>
                     )}
                   </td>
                   <td>
-                    <span className="sh-pill sh-pill-muted">{r.source}</span>
+                    <span className="sh-pill sh-pill-muted">
+                      {r.source === "scheduled" ? "Timetable" : r.source === "observed_live" ? "Live only" : r.source}
+                    </span>
                   </td>
                   <td className="text-right whitespace-nowrap space-x-3 text-xs font-semibold">
                     <Link to={`/?route=${encodeURIComponent(r.routeId)}`}>Map</Link>
@@ -230,16 +231,18 @@ export function RouteDetailPage() {
             <Link to="/routes">Routes</Link>
           </nav>
           <div className="flex items-center gap-3">
-            <span
-              className="sh-route-shield text-white text-base px-3 py-1"
-              style={{ backgroundColor: routeColor(agencyId, data.route.routeId ?? routeId, data.route.color) }}
-            >
-              {data.route.shortName}
-            </span>
+            <RouteBadge
+              size="lg"
+              label={data.route.shortName}
+              color={routeColor(agencyId, data.route.routeId ?? routeId, data.route.color)}
+            />
             <h1 className="sh-title">{data.route.longName}</h1>
           </div>
           <div className="text-xs flex flex-wrap gap-3 pt-0.5" style={{ color: "var(--text-muted)" }}>
-            <span>Geometry: <strong>{data.route.geometrySource}</strong></span>
+            <span>
+              Route map:{" "}
+              <strong>{data.route.geometrySource === "static_gtfs" ? "Loaded" : "Unavailable"}</strong>
+            </span>
             <span>Active vehicles: <strong className="tabular-nums">{data.activeVehicles.length}</strong></span>
             {data.performance.liveAdherence.sampleCount > 0 && (
               <span>
@@ -298,6 +301,7 @@ export function RouteDetailPage() {
         vehicles={data.activeVehicles}
         selectedVehicleId={null}
         routeShape={data.route.shapeGeoJson}
+        routeShapeColor={routeColor(agencyId, data.route.routeId ?? routeId, data.route.color)}
         stops={data.stops}
         heightClass="h-[44vh] min-h-[320px]"
       />

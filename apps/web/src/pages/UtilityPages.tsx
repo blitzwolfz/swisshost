@@ -5,6 +5,13 @@ import { AlertTriangle, Bell, CheckCircle2, Star } from "lucide-react";
 import { apiJson, formatRelativeAge } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
 import { agencyName, agencyShortName } from "../lib/agencies";
+import { routeColor } from "../lib/routeColors";
+import { RouteBadge } from "../components/Transit";
+
+function formatAlertEffect(effect: string): string {
+  const cleaned = effect.replace(/_/g, " ").toLowerCase();
+  return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : "Service notice";
+}
 
 export function AlertsPage() {
   const { agencyId } = usePreferences();
@@ -59,17 +66,15 @@ export function AlertsPage() {
                   {a.headerText}
                 </div>
                 <span className="sh-pill sh-pill-muted">
-                  {a.effect} · {formatRelativeAge(a.lastSeenAt)}
+                  {formatAlertEffect(a.effect)} · {formatRelativeAge(a.lastSeenAt)}
                 </span>
               </div>
               {a.descriptionText && <p className="text-sm m-0" style={{ color: "var(--text-muted)" }}>{a.descriptionText}</p>}
-              <div className="flex flex-wrap gap-2 pt-1 text-xs font-semibold">
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs font-semibold">
                 {a.informedEntities.map((e, i) =>
                   e.routeId ? (
                     <Link key={i} to={`/routes/${effectiveAgency}/${encodeURIComponent(e.routeId)}`}>
-                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
-                        {e.routeId}
-                      </span>
+                      <RouteBadge label={e.routeId} color={routeColor(effectiveAgency, e.routeId)} />
                     </Link>
                   ) : e.stopId ? (
                     <Link key={i} to={`/stops/${effectiveAgency}/${encodeURIComponent(e.stopId)}`}>
@@ -266,14 +271,13 @@ export function FavoritesPage() {
 
   return (
     <div className="sh-page sh-page-narrow">
-      <div className="flex items-end justify-between">
+      <div className="sh-page-head">
         <div>
-          <h1 className="sh-title">
-            Saved ({favorites.length})
-          </h1>
+          <h1 className="sh-title">Saved ({favorites.length})</h1>
         </div>
-        <Link to="/account" className="text-xs font-semibold">
-          Sync &amp; alerts</Link>
+        <Link to="/account" className="sh-btn">
+          Sync &amp; alerts
+        </Link>
       </div>
 
       {favorites.length === 0 ? (
@@ -387,29 +391,13 @@ export function AccountPage() {
       {statusMsg && <div className="sh-card p-3 text-xs font-medium">{statusMsg}</div>}
 
       {!me?.user ? (
-        <form onSubmit={submitAuth} className="sh-card p-5 max-w-md space-y-4">
-          <div className="flex gap-1 p-1 border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-            <button
-              type="button"
-              onClick={() => setMode("login")}
-              className="flex-1 py-1.5 text-xs font-bold border-0 cursor-pointer"
-              style={{
-                background: mode === "login" ? "var(--bg-elevated)" : "transparent",
-                color: mode === "login" ? "var(--text)" : "var(--text-muted)",
-              }}
-            >
-              Sign In
+        <form onSubmit={submitAuth} className="sh-card py-5 max-w-md space-y-4">
+          <div role="group" aria-label="Authentication mode" className="sh-seg w-full">
+            <button type="button" aria-pressed={mode === "login"} onClick={() => setMode("login")}>
+              Sign in
             </button>
-            <button
-              type="button"
-              onClick={() => setMode("register")}
-              className="flex-1 py-1.5 text-xs font-bold border-0 cursor-pointer"
-              style={{
-                background: mode === "register" ? "var(--bg-elevated)" : "transparent",
-                color: mode === "register" ? "var(--text)" : "var(--text-muted)",
-              }}
-            >
-              Create Account
+            <button type="button" aria-pressed={mode === "register"} onClick={() => setMode("register")}>
+              Create account
             </button>
           </div>
           <div className="space-y-3">

@@ -379,6 +379,11 @@
     vertical-align: middle;
   }
 
+  .sh-table tbody tr:hover td,
+  .sh-table tbody tr:hover th {
+    background-color: var(--paper-raised);
+  }
+
   .sh-table tbody th {
     position: static;
     font-size: var(--step-0);
@@ -500,13 +505,15 @@
     box-sizing: border-box;
   }
 
-  .sh-btn:hover {
+  .sh-btn:hover:not(:disabled) {
     text-decoration: none;
+    background-color: var(--paper-sunk);
   }
 
   .sh-btn:disabled {
     cursor: not-allowed;
     color: var(--ink-soft);
+    opacity: 0.7;
   }
 
   .sh-btn-primary {
@@ -515,8 +522,16 @@
     color: var(--on-accent);
   }
 
-  .sh-btn-primary:hover {
-    color: var(--on-accent);
+  .sh-btn-primary:hover:not(:disabled) {
+    background-color: var(--ink);
+    border-color: var(--ink);
+    color: var(--paper);
+  }
+
+  .dark .sh-btn-primary:hover:not(:disabled) {
+    background-color: #ffc53d;
+    border-color: #ffc53d;
+    color: #000000;
   }
 
   .sh-btn-icon {
@@ -608,6 +623,11 @@
     border-left: 0;
   }
 
+  .sh-seg > button:hover:not([aria-pressed="true"]):not([aria-current="true"]),
+  .sh-seg > a:hover:not([aria-current="page"]) {
+    background: var(--paper-sunk);
+  }
+
   .sh-seg > [aria-pressed="true"],
   .sh-seg > [aria-current="true"],
   .sh-seg > [aria-current="page"] {
@@ -647,8 +667,19 @@
     text-decoration: none;
   }
 
-  a.sh-dep:hover .sh-dep-dest {
+  a.sh-dep:hover .sh-dep-dest,
+  button.sh-dep:hover .sh-dep-dest {
     text-decoration: underline;
+  }
+
+  button.sh-dep:hover {
+    background-color: var(--paper-raised);
+  }
+
+  button.sh-dep[aria-current="true"] {
+    background-color: var(--paper-sunk);
+    box-shadow: inset 3px 0 0 var(--accent);
+    padding-left: 0.5rem;
   }
 
   .sh-dep-main {
@@ -825,12 +856,12 @@
       margin-right: auto;
     }
     .sh-agency-row {
-      padding-top: 0.625rem;
-      padding-bottom: 0.625rem;
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
       border-top: var(--border-w) solid var(--line);
     }
     .sh-agency-row .sh-seg {
-      max-width: 420px;
+      max-width: 540px;
     }
   }
 
@@ -864,8 +895,8 @@
   }
 
   .sh-tabbar a[aria-current="page"] {
-    background: var(--ink);
-    color: var(--paper);
+    background: var(--accent);
+    color: var(--on-accent);
     font-weight: 700;
   }
 
@@ -1090,10 +1121,50 @@
     padding: 0.25rem 0.5rem;
     font: 700 13px/1.2 var(--font-grotesk);
     white-space: nowrap;
-    max-width: 200px;
+    max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
     pointer-events: none;
+  }
+
+  .sh-map-popup .maplibregl-popup-content {
+    background: var(--paper);
+    color: var(--ink);
+    border: var(--border-w) solid var(--line);
+    padding: 0.45rem 0.65rem;
+    box-shadow: none;
+    font-family: var(--font-grotesk);
+    pointer-events: none;
+  }
+
+  .sh-map-popup .maplibregl-popup-tip {
+    display: none;
+  }
+
+  .sh-popup-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    max-width: 240px;
+  }
+
+  .sh-popup-title {
+    font-family: var(--font-narrow);
+    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1.15;
+  }
+
+  .sh-popup-route {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .sh-popup-meta {
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    line-height: 1.25;
   }
 }
 

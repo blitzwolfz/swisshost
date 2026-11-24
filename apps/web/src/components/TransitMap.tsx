@@ -1,8 +1,10 @@
 import React, { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
-import { formatClock, type LiveVehicle } from "../lib/api";
+import { formatClock, formatCompass, formatSpeed, formatVehicleStatusLine, type LiveVehicle } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
 import { routeColor } from "../lib/routeColors";
+
+export type MapLabelMode = "fleet" | "both" | "off";
 
 interface TransitMapProps {
   center: [number, number];
@@ -19,6 +21,8 @@ interface TransitMapProps {
   selectedStopId?: string | null;
   onSelectStop?: (stop: { stop_id: string; name: string }) => void;
   followSelected?: boolean;
+  /** How vehicles are labelled next to their bus icons on the map. */
+  labelMode?: MapLabelMode;
   /** Pixels hidden by an overlay at the bottom (e.g. a sheet); centring accounts for it. */
   bottomInset?: number;
   heightClass?: string;
@@ -120,58 +124,130 @@ function restyleBasemap(map: maplibregl.Map, t: MapTheme) {
   }
 }
 
-const MARKER_FONT = '700 16px "Archivo Narrow", "Arial Narrow", sans-serif';
-
-/** Route-colour rectangle with the route number inside, drawn at 2x for HiDPI. */
-function drawVehicleMarker(color: string, label: string, selected: boolean, t: MapTheme): ImageData {
+/**
+ * Crisp HiDPI bus marker (route-coloured circular transit puck with a clear white
+ * bus glyph inside). Drawn at 2x for retina screens.
+ */
+function drawBusMarker(color: string, selected: boolean, assigned: boolean, t: MapTheme): ImageData {
   const scale = 2;
-  const ctx0 = document.createElement("canvas").getContext("2d")!;
-  ctx0.font = MARKER_FONT;
-  const textW = ctx0.measureText(label).width;
-  const ring = selected ? 3 : 1.5;
-  const w = Math.ceil(Math.max(28, textW + 12) + ring * 2);
-  const h = Math.ceil(22 + ring * 2);
+  const r = selected ? 15 : assigned ? 12 : 10;
+  const ring = selected ? 3.5 : 2;
+  const size = Math.ceil((r + ring + 1) * 2);
+  const cx = size / 2;
+  const cy = size / 2;
+
   const canvas = document.createElement("canvas");
-  canvas.width = w * scale;
-  canvas.height = h * scale;
+  canvas.width = size * scale;
+  canvas.height = size * scale;
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
-  // Outline separates the marker from route lines of the same colour
+
+  // High-contrast outer ring separates the bus from route lines and map roads
+  ctx.beginPath();
+  ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
   ctx.fillStyle = selected ? t.ink : t.paper;
-  ctx.fillRect(0, 0, w, h);
+  ctx.fill();
+
+  if (selected) {
+    // Inner paper halo inside ink ring for extra crisp selection focus
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = t.paper;
+    ctx.fill();
+  }
+
+  // Main route-coloured body
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fillStyle = color;
-  ctx.fillRect(ring, ring, w - ring * 2, h - ring * 2);
+  ctx.fill();
+
+  // Crisp front-view bus icon inside the marker
+  const s = selected ? 1.15 : assigned ? 0.96 : 0.82;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(s, s);
+
+  // Bus chassis
   ctx.fillStyle = "#FFFFFF";
-  ctx.font = MARKER_FONT;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, w / 2, h / 2 + 1);
-  return ctx.getImageData(0, 0, w * scale, h * scale);
+  ctx.beginPath();
+  ctx.roundRect(-6.2, -6.8, 12.4, 11.4, 2.2);
+  ctx.fill();
+
+  // Windshield cutout (tinted with bus body colour)
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(-4.6, -4.8, 9.2, 4.6, 1);
+  ctx.fill();
+
+  // Destination strip above windshield
+  ctx.fillStyle = color;
+  ctx.fillRect(-3.2, -6.1, 6.4, 0.8);
+
+  // Headlights (subtle dark dots or bright dots on white chassis)
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(-3.6, 2.2, 1.1, 0, Math.PI * 2);
+  ctx.arc(3.6, 2.2, 1.1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Wheels underneath chassis
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(-5.2, 4.3, 2.6, 2.1);
+  ctx.fillRect(2.6, 4.3, 2.6, 2.1);
+
+  ctx.restore();
+  return ctx.getImageData(0, 0, size * scale, size * scale);
 }
 
-/** Small heading pointer; orbits the marker via icon-offset + icon-rotate. */
-function drawHeading(t: MapTheme): ImageData {
+/** Directional heading pointer orbiting the bus marker to show direction of travel. */
+function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
   const scale = 2;
-  const w = 12;
-  const h = 8;
+  const w = selected ? 18 : 14;
+  const h = selected ? 12 : 10;
   const canvas = document.createElement("canvas");
   canvas.width = w * scale;
   canvas.height = h * scale;
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
+
+  // Outer outline triangle
   ctx.beginPath();
   ctx.moveTo(w / 2, 0);
   ctx.lineTo(w, h);
+  ctx.lineTo(w / 2, h - 2.4);
   ctx.lineTo(0, h);
   ctx.closePath();
-  ctx.fillStyle = t.ink;
+  ctx.fillStyle = selected ? t.ink : t.paper;
   ctx.fill();
+
+  // Inner filled arrow in route/ink colour
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 2.2);
+  ctx.lineTo(w - 2.4, h - 1.4);
+  ctx.lineTo(w / 2, h - 3.6);
+  ctx.lineTo(2.4, h - 1.4);
+  ctx.closePath();
+  ctx.fillStyle = selected ? t.ink : color;
+  ctx.fill();
+
   return ctx.getImageData(0, 0, w * scale, h * scale);
 }
 
-function markerLabel(v: LiveVehicle): string {
-  const raw = v.routeShortName ?? v.routeId ?? v.fleetNumber;
-  return raw.length > 5 ? raw.slice(0, 5) : raw;
+function busLabelText(v: LiveVehicle, mode: MapLabelMode): string {
+  if (mode === "off") return "";
+  const fleet = v.fleetNumber || v.vehicleId;
+  const route = v.routeShortName ?? v.routeId;
+  if (mode === "fleet") return `#${fleet}`;
+  return route ? `#${fleet} · ${route}` : `#${fleet}`;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 const prefersReducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -190,24 +266,30 @@ export function TransitMap({
   selectedStopId = null,
   onSelectStop,
   followSelected = false,
+  labelMode = "both",
   bottomInset = 0,
   heightClass = "h-[65vh] min-h-[420px]",
   rounded = true,
 }: TransitMapProps) {
-  const { resolvedTheme, interpolate } = usePreferences();
+  const { resolvedTheme, interpolate, units } = usePreferences();
   const theme = resolvedTheme === "dark" ? DARK : LIGHT;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const vehiclesRef = useRef<LiveVehicle[]>(vehicles);
   const selectedRef = useRef<string | null>(selectedVehicleId);
+  const labelModeRef = useRef<MapLabelMode>(labelMode);
+  const unitsRef = useRef(units);
   const onSelectRef = useRef(onSelectVehicle);
   const onSelectStopRef = useRef(onSelectStop);
   const shownPos = useRef(new Map<string, [number, number]>());
   const animRef = useRef<number | null>(null);
   const stopLabelRef = useRef<maplibregl.Marker | null>(null);
+  const hoverPopupRef = useRef<maplibregl.Popup | null>(null);
 
   vehiclesRef.current = vehicles;
   selectedRef.current = selectedVehicleId;
+  labelModeRef.current = labelMode;
+  unitsRef.current = units;
   onSelectRef.current = onSelectVehicle;
   onSelectStopRef.current = onSelectStop;
 
@@ -217,11 +299,13 @@ export function TransitMap({
     type: "FeatureCollection" as const,
     features: list.map((v) => {
       const selected = v.vehicleId === selId;
+      const assigned = Boolean(v.routeId || v.tripId);
       const hasBearing = v.bearingDeg !== null && Number.isFinite(v.bearingDeg);
       const color = routeColor(v.agencyId, v.routeId, v.routeColor);
-      const label = markerLabel(v);
       const stale = v.freshness === "stale";
       const pos = positions?.get(keyOf(v)) ?? [v.lon, v.lat];
+      const label = busLabelText(v, labelModeRef.current);
+      const selectedLabel = busLabelText(v, "both");
       return {
         type: "Feature" as const,
         id: keyOf(v),
@@ -229,9 +313,13 @@ export function TransitMap({
         properties: {
           agencyId: v.agencyId,
           vehicleId: v.vehicleId,
-          icon: `veh|${color}|${selected ? 1 : 0}|${label}`,
+          icon: `bus|${color}|${selected ? 1 : 0}|${assigned ? 1 : 0}`,
+          headingIcon: `hdg|${color}|${selected ? 1 : 0}`,
+          label,
+          selectedLabel,
           bearing: hasBearing ? v.bearingDeg : 0,
           hasBearing,
+          assigned,
           stale,
           lastSeen: stale ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}` : "",
           selected,
@@ -266,17 +354,21 @@ export function TransitMap({
       "bottom-right"
     );
 
-    // Vehicle marker images are generated on demand, one per colour + label + state
+    // Bus icons and heading pointers are generated on demand per colour + state
     map.on("styleimagemissing", (e) => {
       const id = e.id;
-      if (!id.startsWith("veh|") || map.hasImage(id)) return;
-      const [, color, sel, ...rest] = id.split("|");
-      map.addImage(id, drawVehicleMarker(color!, rest.join("|"), sel === "1", t), { pixelRatio: 2 });
+      if (map.hasImage(id)) return;
+      if (id.startsWith("bus|")) {
+        const [, color, sel, assigned] = id.split("|");
+        map.addImage(id, drawBusMarker(color!, sel === "1", assigned === "1", t), { pixelRatio: 2 });
+      } else if (id.startsWith("hdg|")) {
+        const [, color, sel] = id.split("|");
+        map.addImage(id, drawHeading(color!, sel === "1", t), { pixelRatio: 2 });
+      }
     });
 
     const setupLayers = () => {
       restyleBasemap(map, t);
-      if (!map.hasImage("veh-heading")) map.addImage("veh-heading", drawHeading(t), { pixelRatio: 2 });
 
       map.addSource("route-shape", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
@@ -347,7 +439,7 @@ export function TransitMap({
         data: toGeoJson(vehiclesRef.current, selectedRef.current, shownPos.current),
         cluster: true,
         clusterMaxZoom: 10,
-        clusterRadius: 40,
+        clusterRadius: 42,
       });
 
       map.addLayer({
@@ -376,25 +468,33 @@ export function TransitMap({
         paint: { "text-color": t.paper },
       });
 
-      const vehicleOpacity: maplibregl.ExpressionSpecification = ["case", ["boolean", ["get", "stale"], false], 0.4, 1];
+      const vehicleOpacity: maplibregl.ExpressionSpecification = [
+        "case",
+        ["boolean", ["get", "stale"], false],
+        0.42,
+        ["boolean", ["get", "assigned"], true],
+        1,
+        0.82,
+      ];
 
+      // Directional heading arrow attached to the front edge of each bus marker
       map.addLayer({
         id: "vehicle-heading",
         type: "symbol",
         source: "vehicles",
         filter: ["all", ["!", ["has", "point_count"]], ["boolean", ["get", "hasBearing"], false]],
-        minzoom: 12,
         layout: {
-          "icon-image": "veh-heading",
+          "icon-image": ["get", "headingIcon"],
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
-          "icon-offset": [0, -21],
+          "icon-offset": ["case", ["boolean", ["get", "selected"], false], ["literal", [0, -22]], ["literal", [0, -17]]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
         paint: { "icon-opacity": vehicleOpacity },
       });
 
+      // Bus icon puck
       map.addLayer({
         id: "vehicle-points",
         type: "symbol",
@@ -410,10 +510,59 @@ export function TransitMap({
             100,
             ["boolean", ["get", "stale"], false],
             0,
+            ["boolean", ["get", "assigned"], true],
+            2,
             1,
           ],
         },
         paint: { "icon-opacity": vehicleOpacity },
+      });
+
+      // Collision-aware bus labels (shows #fleet or #fleet · route without overlapping into clutter)
+      map.addLayer({
+        id: "vehicle-labels",
+        type: "symbol",
+        source: "vehicles",
+        filter: ["all", ["!", ["has", "point_count"]], ["!", ["boolean", ["get", "selected"], false]]],
+        minzoom: 11.5,
+        layout: {
+          "text-field": ["get", "label"],
+          "text-size": 11,
+          "text-font": ["Noto Sans Bold"],
+          "text-offset": [0, 1.55],
+          "text-anchor": "top",
+          "text-optional": true,
+          "text-padding": 3,
+          "symbol-sort-key": ["case", ["boolean", ["get", "assigned"], true], 2, 1],
+        },
+        paint: {
+          "text-color": t.textStrong,
+          "text-halo-color": t.paper,
+          "text-halo-width": 2,
+          "text-opacity": vehicleOpacity,
+        },
+      });
+
+      // Always-visible label for the currently selected bus
+      map.addLayer({
+        id: "vehicle-selected-label",
+        type: "symbol",
+        source: "vehicles",
+        filter: ["all", ["!", ["has", "point_count"]], ["boolean", ["get", "selected"], false]],
+        layout: {
+          "text-field": ["get", "selectedLabel"],
+          "text-size": 12,
+          "text-font": ["Noto Sans Bold"],
+          "text-offset": [0, 1.85],
+          "text-anchor": "top",
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: {
+          "text-color": t.textStrong,
+          "text-halo-color": t.paper,
+          "text-halo-width": 2.2,
+        },
       });
 
       map.addLayer({
@@ -421,12 +570,12 @@ export function TransitMap({
         type: "symbol",
         source: "vehicles",
         filter: ["all", ["!", ["has", "point_count"]], ["boolean", ["get", "stale"], false]],
-        minzoom: 12.5,
+        minzoom: 13.5,
         layout: {
           "text-field": ["get", "lastSeen"],
-          "text-size": 11,
+          "text-size": 10,
           "text-font": ["Noto Sans Italic"],
-          "text-offset": [0, 1.7],
+          "text-offset": [0, 2.7],
           "text-anchor": "top",
           "text-optional": true,
         },
@@ -451,6 +600,48 @@ export function TransitMap({
         if (found && onSelectRef.current) onSelectRef.current(found);
       });
 
+      // Lightweight desktop hover tooltip showing the exact bus & route info
+      const hoverPopup = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        offset: 18,
+        className: "sh-map-popup",
+      });
+      hoverPopupRef.current = hoverPopup;
+
+      map.on("mousemove", "vehicle-points", (e) => {
+        const feat = e.features?.[0];
+        if (!feat || feat.geometry.type !== "Point") return;
+        const vid = feat.properties?.vehicleId as string | undefined;
+        const ag = feat.properties?.agencyId as string | undefined;
+        const found = vehiclesRef.current.find((v) => v.vehicleId === vid && (!ag || v.agencyId === ag));
+        if (!found) return;
+        const routeLine = found.routeId
+          ? `Route ${escapeHtml(found.routeShortName ?? found.routeId)}${found.headsign ? ` · ${escapeHtml(found.headsign)}` : ""}`
+          : "Not on a route";
+        const speedText = found.speedMps !== null ? formatSpeed(found.speedMps, unitsRef.current) : null;
+        const compass = found.bearingDeg !== null ? formatCompass(found.bearingDeg) : "";
+        const metaParts = [
+          found.stopName ? formatVehicleStatusLine(found) : null,
+          speedText ? `${speedText}${compass ? ` ${compass}` : ""}` : null,
+          found.freshness === "stale" ? `Last seen ${formatClock(found.observedAt ?? found.receivedAt)}` : `${found.ageSeconds}s ago`,
+        ].filter(Boolean);
+        hoverPopup
+          .setLngLat(feat.geometry.coordinates as [number, number])
+          .setHTML(
+            `<div class="sh-popup-inner">` +
+              `<div class="sh-popup-title">Bus #${escapeHtml(found.fleetNumber)}</div>` +
+              `<div class="sh-popup-route">${routeLine}</div>` +
+              `<div class="sh-popup-meta">${escapeHtml(metaParts.join(" · "))}</div>` +
+              `</div>`
+          )
+          .addTo(map);
+      });
+
+      map.on("mouseleave", "vehicle-points", () => {
+        hoverPopup.remove();
+      });
+
       map.on("click", "stops-dots", (e) => {
         if (!onSelectStopRef.current) return;
         // Vehicles sit above stops; a click on a vehicle wins
@@ -473,20 +664,15 @@ export function TransitMap({
       map.fire("sh:ready");
     };
 
-    // Marker labels are canvas-drawn, so wait (briefly) for Archivo Narrow first
-    const fontReady = Promise.race([
-      document.fonts?.load(MARKER_FONT).catch(() => undefined) ?? Promise.resolve(),
-      new Promise((r) => setTimeout(r, 1500)),
-    ]);
     map.on("load", () => {
-      void fontReady.then(() => {
-        if (mapRef.current === map) setupLayers();
-      });
+      if (mapRef.current === map) setupLayers();
     });
     mapRef.current = map;
 
     return () => {
       if (animRef.current !== null) cancelAnimationFrame(animRef.current);
+      hoverPopupRef.current?.remove();
+      hoverPopupRef.current = null;
       stopLabelRef.current?.remove();
       stopLabelRef.current = null;
       map.remove();
@@ -566,7 +752,7 @@ export function TransitMap({
         }
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [vehicles, selectedVehicleId, followSelected, interpolate, resolvedTheme]
+    [vehicles, selectedVehicleId, followSelected, interpolate, labelMode, resolvedTheme]
   );
 
   useEffect(
@@ -624,7 +810,7 @@ export function TransitMap({
           el.className = "sh-map-label";
           el.textContent = sel.name;
           el.setAttribute("aria-hidden", "true");
-          stopLabelRef.current = new maplibregl.Marker({ element: el, anchor: "top-left", offset: [14, 10] })
+          stopLabelRef.current = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, -14] })
             .setLngLat([sel.lon, sel.lat])
             .addTo(map);
         }
