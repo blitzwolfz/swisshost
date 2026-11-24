@@ -1,10 +1,13 @@
 import React, { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Accessibility, Clock, MapPin, Star } from "lucide-react";
+import { Star } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
-import { apiJson, formatRelativeAge, type LiveVehicle } from "../lib/api";
+import { apiJson, formatClock, type AgencySummary, type StopArrivals } from "../lib/api";
+import { useRouteLookup } from "../lib/routeColors";
+import { DepartureRow, EmptyState, LiveLegend, RouteBadge, vehicleNounFor } from "../components/Transit";
 import { usePreferences } from "../lib/preferences";
+import { agencyName } from "../lib/agencies";
 
 interface StopListRow {
   stop_id: string;
@@ -34,25 +37,25 @@ export function StopsPage() {
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            {effectiveAgency.toUpperCase()} Stations &amp; Stops
-          </div>
-          <h1 className="sh-title">Stops</h1>
-          <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
-            Look up any stop by name or stop code for live departure boards, predictions, and approaching vehicles.
-          </p>
+          <h1 className="sh-title">{agencyName(effectiveAgency)} stops</h1>
+          <p className="sh-lede">Find a stop by name or code to see its next departures.</p>
         </div>
-        <input
-          type="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search stop name or code…"
-          aria-label="Search stops"
-          className="sh-input w-64"
-        />
+        <div>
+          <label htmlFor="stop-search" className="sh-label">
+            Stop name or code
+          </label>
+          <input
+            id="stop-search"
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="For example, Central Station"
+            className="sh-input w-72"
+          />
+        </div>
       </div>
 
-      {isLoading && <p className="text-sm" style={{ color: "var(--text-muted)" }}>Loading stops…</p>}
+      {isLoading && <p className="text-sm sh-muted">Loading stops…</p>}
       {error && <p className="text-sm" style={{ color: "var(--status-err)" }}>{(error as Error).message}</p>}
 
       <div className="sh-table-wrap">
@@ -60,7 +63,7 @@ export function StopsPage() {
           <thead>
             <tr>
               <th>Code</th>
-              <th>Stop Name</th>
+              <th>Stop</th>
               <th>Platform</th>
               <th>Accessibility</th>
               <th>Coordinates</th>
@@ -69,35 +72,30 @@ export function StopsPage() {
           <tbody>
             {(data?.stops ?? []).length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center" style={{ color: "var(--text-muted)" }}>
+                <td colSpan={5} className="py-6 sh-muted">
                   {data?.staticVersionId
-                    ? "No stops match your search."
-                    : "Static GTFS schedule has not been imported for this agency yet. Open /admin and click Import on the agency's static feed."}
+                    ? `No stops match “${q}”. Try part of the street name or the number on the stop sign.`
+                    : "The timetable for this agency has not been imported yet, so there are no stops to list. An admin can import it from the Admin page."}
                 </td>
               </tr>
             ) : (
               data!.stops.map((s) => (
                 <tr key={s.stop_id}>
-                  <td className="font-mono text-xs font-semibold">{s.stop_code ?? s.stop_id}</td>
-                  <td className="font-semibold">
-                    <Link to={`/stops/${effectiveAgency}/${encodeURIComponent(s.stop_id)}`} className="inline-flex items-center gap-1.5">
-                      <MapPin size={13} style={{ color: "var(--primary)" }} />
-                      {s.name}
-                    </Link>
+                  <td className="sh-narrow">{s.stop_code ?? s.stop_id}</td>
+                  <td className="font-bold">
+                    <Link to={`/stops/${effectiveAgency}/${encodeURIComponent(s.stop_id)}`}>{s.name}</Link>
                   </td>
-                  <td>{s.platform_code ?? "—"}</td>
-                  <td className="text-xs">
+                  <td>{s.platform_code ?? <span className="sh-muted">None</span>}</td>
+                  <td>
                     {s.wheelchair_boarding === 1 ? (
-                      <span className="sh-pill sh-pill-ok">
-                        <Accessibility size={11} /> Accessible
-                      </span>
+                      "Accessible"
                     ) : s.wheelchair_boarding === 2 ? (
-                      <span className="sh-pill sh-pill-warn">Not accessible</span>
+                      <span className="font-bold">Not accessible</span>
                     ) : (
-                      <span style={{ color: "var(--text-muted)" }}>Unknown</span>
+                      <span className="sh-muted">Unknown</span>
                     )}
                   </td>
-                  <td className="font-mono text-xs tabular-nums" style={{ color: "var(--text-muted)" }}>
+                  <td className="tabular-nums sh-muted">
                     {s.lat.toFixed(4)}, {s.lon.toFixed(4)}
                   </td>
                 </tr>
@@ -113,35 +111,17 @@ export function StopsPage() {
 export function StopDetailPage() {
   const { agencyId = "guelph", stopId = "" } = useParams();
   const { isFavorite, toggleFavorite } = usePreferences();
+  const routes = useRouteLookup(agencyId);
+  const { data: agenciesData } = useQuery({
+    queryKey: ["agencies"],
+    queryFn: () => apiJson<{ agencies: AgencySummary[] }>("/api/v1/agencies"),
+    staleTime: 60_000,
+  });
+  const noun = vehicleNounFor(agenciesData?.agencies.find((a) => a.id === agencyId)?.modes);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["stop-arrivals", agencyId, stopId],
-    queryFn: () =>
-      apiJson<{
-        agencyId: string;
-        timezone: string;
-        serviceDate: string;
-        serverTime: string;
-        stop: { stop_id: string; stop_code?: string; name: string; lat?: number; lon?: number; platform_code?: string };
-        departures: Array<{
-          tripId: string;
-          routeId: string;
-          headsign: string | null;
-          vehicleId: string | null;
-          fleetNumber: string | null;
-          scheduleRelationship: string;
-          scheduledTime: string;
-          predictedTime: string;
-          etaSeconds: number;
-          uncertaintySec: number;
-          predictionSource: string;
-          confidence: number;
-          basis: string;
-          distanceMeters: number | null;
-        }>;
-        approachingVehicles: Array<LiveVehicle & { distanceMeters: number }>;
-        alerts: Array<{ id: string; header_text: string; description_text: string }>;
-      }>(`/api/v1/agencies/${agencyId}/stops/${encodeURIComponent(stopId)}/arrivals`),
+    queryFn: () => apiJson<StopArrivals>(`/api/v1/agencies/${agencyId}/stops/${encodeURIComponent(stopId)}/arrivals`),
     refetchInterval: 20_000,
   });
 
@@ -149,7 +129,7 @@ export function StopDetailPage() {
   if (error || !data) {
     return (
       <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
-        {(error as Error)?.message ?? "Failed to load stop"}
+        {(error as Error)?.message ?? "This stop could not be loaded. Check the stop code and try again."}
       </div>
     );
   }
@@ -157,25 +137,22 @@ export function StopDetailPage() {
   const fav = isFavorite(agencyId, "stop", stopId);
 
   return (
-    <div className="sh-page">
-      <div className="sh-page-head">
-        <div className="space-y-1">
-          <div className="sh-kicker">
-            <Link to="/stops">Stops</Link> / {agencyId}
-          </div>
-          <h1 className="sh-title flex flex-wrap items-center gap-2">
-            {data.stop.name}
-            {data.stop.stop_code && (
-              <span className="sh-pill sh-pill-muted font-mono">#{data.stop.stop_code}</span>
-            )}
-          </h1>
-          <div className="text-xs tabular-nums" style={{ color: "var(--text-muted)" }}>
-            Service date {data.serviceDate} ({data.timezone}) · Updated {formatRelativeAge(data.serverTime)}
-          </div>
+    <div className="sh-page sh-page-narrow">
+      <nav aria-label="Breadcrumb" className="sh-kicker">
+        <Link to="/stops">Stops</Link>
+      </nav>
+      <div className="sh-page-head" style={{ marginTop: "0.25rem" }}>
+        <div>
+          <h1 className="sh-title">{data.stop.name}</h1>
+          <p className="sh-lede tabular-nums">
+            {data.stop.stop_code ? `Stop ${data.stop.stop_code}. ` : ""}Next departures, updated{" "}
+            {formatClock(data.serverTime)}. Service day {data.serviceDate} ({data.timezone}).
+          </p>
         </div>
         <button
           type="button"
           className="sh-btn"
+          aria-pressed={fav}
           onClick={() =>
             toggleFavorite({
               agencyId,
@@ -185,74 +162,45 @@ export function StopDetailPage() {
             })
           }
         >
-          <Star size={14} fill={fav ? "currentColor" : "none"} />
-          {fav ? "Favorited" : "Favorite"}
+          <Star size={18} fill={fav ? "currentColor" : "none"} aria-hidden="true" />
+          {fav ? "Saved" : "Save stop"}
         </button>
       </div>
 
-      {/* Swiss Station-Style Live Departure Board (Departures First — PRD §3.1) */}
-      <section className="space-y-2.5">
-        <h2 className="sh-section-title flex items-center gap-2">
-          <Clock size={16} style={{ color: "var(--primary)" }} /> Live Departures
-        </h2>
-        <div className="sh-card overflow-hidden divide-y" style={{ borderColor: "var(--border)" }}>
-          {data.departures.length === 0 ? (
-            <div className="p-6 text-sm text-center" style={{ color: "var(--text-muted)" }}>
-              No upcoming scheduled or predicted departures within the next 2 hours.
+      {data.alerts.length > 0 && (
+        <section aria-label="Service alerts" className="sh-card pt-3 space-y-2">
+          {data.alerts.map((a) => (
+            <div key={a.id} className="text-sm">
+              <strong>{a.header_text}</strong>
+              {a.description_text && <p className="m-0 mt-1 sh-muted">{a.description_text}</p>}
             </div>
-          ) : (
-            data.departures.map((d, idx) => {
-              const mins = Math.round(d.etaSeconds / 60);
-              const isLive = d.predictionSource !== "scheduled";
-              return (
-                <div
-                  key={`${d.tripId}-${idx}`}
-                  className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 hover:bg-[var(--surface)] transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Link to={`/routes/${agencyId}/${encodeURIComponent(d.routeId)}`} className="no-underline">
-                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
-                        {d.routeId}
-                      </span>
-                    </Link>
-                    <div className="min-w-0">
-                      <div className="font-bold text-sm truncate">
-                        {d.headsign || `Route ${d.routeId}`}
-                        {d.scheduleRelationship !== "SCHEDULED" && (
-                          <span className="sh-pill sh-pill-err ml-2">{d.scheduleRelationship}</span>
-                        )}
-                      </div>
-                      <div className="text-xs flex flex-wrap items-center gap-2 mt-0.5" style={{ color: "var(--text-muted)" }}>
-                        <span className="font-mono">Sched {d.scheduledTime}</span>
-                        <span>·</span>
-                        <span className={isLive ? "sh-pill sh-pill-ok" : "sh-pill sh-pill-muted"}>
-                          {d.predictionSource.replace(/_/g, " ")}
-                        </span>
-                        {d.vehicleId && (
-                          <Link
-                            to={`/vehicles/${agencyId}/${encodeURIComponent(d.vehicleId)}`}
-                            className="font-semibold"
-                          >
-                            Vehicle #{d.fleetNumber ?? d.vehicleId}
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+          ))}
+        </section>
+      )}
 
-                  <div className="text-right shrink-0">
-                    <div className="text-xl font-extrabold tabular-nums leading-none" style={{ color: isLive ? "var(--primary)" : "var(--text)" }}>
-                      {mins <= 0 ? "Due" : `${mins} min`}
-                    </div>
-                    <div className="text-[11px] tabular-nums mt-0.5" style={{ color: "var(--text-muted)" }}>
-                      ±{Math.round((d.uncertaintySec / 60) * 10) / 10}m · {Math.round(d.confidence * 100)}%
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
+      <section aria-labelledby="deps-title" className="space-y-2">
+        <h2 id="deps-title" className="sh-section-title">
+          Departures
+        </h2>
+        <LiveLegend />
+        {data.departures.length === 0 ? (
+          <EmptyState>
+            Nothing leaves this stop in the next 2 hours. Check the route timetable for later service.
+          </EmptyState>
+        ) : (
+          <ul className="sh-deps" style={{ borderTop: "var(--border-w) solid var(--line)" }}>
+            {data.departures.map((d, idx) => (
+              <DepartureRow
+                key={`${d.tripId}-${idx}`}
+                agencyId={agencyId}
+                departure={d}
+                routeLabel={routes.shortName(d.routeId)}
+                routeColor={routes.color(d.routeId)}
+                vehicleNoun={noun}
+              />
+            ))}
+          </ul>
+        )}
       </section>
 
       {data.stop.lat !== undefined && data.stop.lon !== undefined && (
@@ -262,32 +210,46 @@ export function StopDetailPage() {
           vehicles={data.approachingVehicles}
           selectedVehicleId={null}
           stops={[{ stop_id: data.stop.stop_id, name: data.stop.name, lat: data.stop.lat, lon: data.stop.lon }]}
+          selectedStopId={data.stop.stop_id}
           heightClass="h-[38vh] min-h-[260px]"
         />
       )}
 
       {data.approachingVehicles.length > 0 && (
-        <section className="space-y-2.5">
-          <h2 className="sh-section-title">Approaching Vehicles (within 2.5 km)</h2>
+        <section className="space-y-2">
+          <h2 className="sh-section-title">Vehicles within 2.5 km</h2>
           <div className="sh-table-wrap">
             <table className="sh-table">
               <thead>
                 <tr>
-                  <th>Fleet #</th>
+                  <th>Fleet</th>
                   <th>Route</th>
                   <th>Distance</th>
-                  <th>GPS Age</th>
+                  <th>Last report</th>
                 </tr>
               </thead>
               <tbody>
                 {data.approachingVehicles.map((v) => (
                   <tr key={v.sourceVehicleId}>
-                    <td className="font-bold tabular-nums">
-                      <Link to={`/vehicles/${agencyId}/${encodeURIComponent(v.vehicleId)}`}>#{v.fleetNumber}</Link>
+                    <td>
+                      <Link className="sh-fleet" to={`/vehicles/${agencyId}/${encodeURIComponent(v.vehicleId)}`}>
+                        {v.fleetNumber}
+                      </Link>
                     </td>
-                    <td>{v.routeId ?? "Unassigned"}</td>
+                    <td>
+                      {v.routeId ? (
+                        <RouteBadge
+                          label={v.routeShortName ?? routes.shortName(v.routeId)}
+                          color={routes.color(v.routeId, v.routeColor)}
+                        />
+                      ) : (
+                        <span className="sh-muted">Not on a route</span>
+                      )}
+                    </td>
                     <td className="tabular-nums">{(v.distanceMeters / 1000).toFixed(2)} km</td>
-                    <td className="tabular-nums text-xs">{v.ageSeconds}s</td>
+                    <td className={`tabular-nums ${v.freshness === "stale" ? "sh-sched" : "sh-live"}`}>
+                      {v.freshness === "stale" ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}` : `${v.ageSeconds}s ago`}
+                    </td>
                   </tr>
                 ))}
               </tbody>

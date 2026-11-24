@@ -119,3 +119,47 @@ export function formatVehicleStatusLine(v: Pick<LiveVehicle, "currentStatus" | "
   if (raw === "IN_TRANSIT_TO") return stopLabel ? `Next: ${stopLabel}` : "In transit";
   return stopLabel ? `${raw.replace(/_/g, " ")} ${stopLabel}` : raw.replace(/_/g, " ");
 }
+
+export interface StopDeparture {
+  tripId: string;
+  routeId: string;
+  headsign: string | null;
+  vehicleId: string | null;
+  fleetNumber?: string | null;
+  scheduleRelationship: string;
+  scheduledTime: string;
+  predictedTime: string;
+  etaSeconds: number;
+  uncertaintySec: number;
+  predictionSource: string;
+  confidence: number;
+  basis: string;
+  distanceMeters?: number | null;
+}
+
+export interface StopArrivals {
+  agencyId: string;
+  timezone: string;
+  serviceDate: string;
+  serverTime: string;
+  stop: { stop_id: string; stop_code?: string; name: string; lat?: number; lon?: number; platform_code?: string };
+  departures: StopDeparture[];
+  approachingVehicles: Array<LiveVehicle & { distanceMeters: number }>;
+  alerts: Array<{ id: string; header_text: string; description_text: string }>;
+}
+
+/** True when a departure time is backed by live data rather than the timetable alone. */
+export function isLiveDeparture(d: Pick<StopDeparture, "predictionSource">): boolean {
+  return d.predictionSource !== "scheduled" && d.predictionSource !== "unknown";
+}
+
+/** "11:42 pm" in the viewer's locale clock. */
+export function formatClock(iso: string | null | undefined): string {
+  if (!iso) return "unknown";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "unknown";
+  return d
+    .toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s?a\.?m\.?/i, " am")
+    .replace(/\s?p\.?m\.?/i, " pm");
+}

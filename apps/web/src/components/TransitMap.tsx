@@ -13,6 +13,8 @@ interface TransitMapProps {
   replayTrail?: Array<[number, number]> | null;
   stops?: Array<{ stop_id: string; name: string; lat: number; lon: number }>;
   userLocation?: { lat: number; lon: number } | null;
+  selectedStopId?: string | null;
+  onSelectStop?: (stop: { stop_id: string; name: string }) => void;
   followSelected?: boolean;
   heightClass?: string;
   rounded?: boolean;
