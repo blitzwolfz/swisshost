@@ -10,13 +10,15 @@ import {
   Navigation,
   SlidersHorizontal,
   Star,
-  X,
 } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
+import { BottomSheet } from "../components/BottomSheet";
+import { DepartureRow, EmptyState, LiveLegend, RouteBadge, vehicleNounFor } from "../components/Transit";
 import { useLiveAgency } from "../hooks/useLiveAgency";
 import { useUserLocation } from "../hooks/useUserLocation";
 import {
   apiJson,
+  formatClock,
   formatCompass,
   formatDelay,
   formatRelativeAge,
@@ -24,8 +26,11 @@ import {
   formatVehicleStatusLine,
   type AgencySummary,
   type LiveVehicle,
+  type StopArrivals,
 } from "../lib/api";
+import { agencyName, agencyShortName } from "../lib/agencies";
 import { usePreferences } from "../lib/preferences";
+import { routeColor, useRouteLookup } from "../lib/routeColors";
 
 interface RideTimeline {
   agencyId: string;
@@ -44,11 +49,26 @@ interface RideTimeline {
   }>;
 }
 
+function useIsDesktop() {
+  const query = "(min-width: 1024px)";
+  const [match, setMatch] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = (e: MediaQueryListEvent) => setMatch(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return match;
+}
+
 export default function LiveMapPage() {
-  const { agencyId, units, isFavorite, toggleFavorite } = usePreferences();
+  const { agencyId, setAgencyId, units, isFavorite, toggleFavorite } = usePreferences();
+  const isDesktop = useIsDesktop();
   const [searchParams, setSearchParams] = useSearchParams();
   const routeFilter = searchParams.get("route") || "";
   const selectedId = searchParams.get("vehicle") || null;
+  const selectedStopId = searchParams.get("stop") || null;
+  const stopAgency = searchParams.get("stopAgency") || agencyId;
 
   const [fleetFilter, setFleetFilter] = useState("");
   const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh" | "stale">("all");
@@ -66,15 +86,7 @@ export default function LiveMapPage() {
     staleTime: 60_000,
   });
 
-  const { data: routesData } = useQuery({
-    queryKey: ["routes", agencyId],
-    queryFn: () =>
-      apiJson<{ routes: Array<{ routeId: string; shortName: string; longName: string }> }>(
-        `/api/v1/agencies/${agencyId}/routes`
-      ),
-    enabled: agencyId !== "all",
-    staleTime: 60_000,
-  });
+  const routes = useRouteLookup(agencyId);
 
   const { data: routeDetail } = useQuery({
     queryKey: ["route-shape", agencyId, routeFilter],
@@ -87,7 +99,25 @@ export default function LiveMapPage() {
     staleTime: 120_000,
   });
 
+  const { data: stopData, isLoading: stopLoading } = useQuery({
+    queryKey: ["stop-arrivals", stopAgency, selectedStopId],
+    queryFn: () =>
+      apiJson<StopArrivals>(
+        `/api/v1/agencies/${stopAgency}/stops/${encodeURIComponent(selectedStopId!)}/arrivals`
+      ),
+    enabled: Boolean(selectedStopId) && stopAgency !== "all",
+    refetchInterval: 20_000,
+  });
+  const stopRoutes = useRouteLookup(stopAgency);
+
   const live = useLiveAgency(agencyId, routeFilter || undefined);
+
+  // The live hook can stay "connecting" while it polls; after a short wait treat an empty result as real
+  const [settledAgency, setSettledAgency] = useState<string | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => setSettledAgency(agencyId), 5000);
+    return () => clearTimeout(t);
+  }, [agencyId]);
 
   const activeAgency = useMemo(
     () => agenciesData?.agencies.find((a) => a.id === agencyId),
@@ -116,6 +146,8 @@ export default function LiveMapPage() {
       return true;
     });
   }, [live.vehicles, fleetFilter, freshnessFilter, assignedFilter]);
+
+  const liveCount = filteredVehicles.filter((v) => v.freshness !== "stale").length;
 
   const selectedVehicle: LiveVehicle | null = useMemo(() => {
     if (!selectedId) return null;
@@ -163,9 +195,24 @@ export default function LiveMapPage() {
   const activeVehicle = rideData?.vehicle ?? selectedVehicle;
   const upcomingStops = (rideData?.stops ?? []).filter((s) => s.status !== "passed");
   const effectiveRouteShape = rideData?.routeShape ?? routeDetail?.route.shapeGeoJson ?? null;
-  const effectiveStops = rideData?.stops.length
-    ? rideData.stops.map((s) => ({ stop_id: s.stopId, name: s.name, lat: s.lat, lon: s.lon }))
-    : routeDetail?.stops;
+  const shapeRouteId = activeVehicle?.routeId ?? routeFilter;
+  const shapeColor = effectiveRouteShape
+    ? activeVehicle
+      ? routeColor(activeVehicle.agencyId, activeVehicle.routeId, activeVehicle.routeColor)
+      : routes.color(shapeRouteId)
+    : null;
+
+  const effectiveStops = useMemo(() => {
+    const base = rideData?.stops.length
+      ? rideData.stops.map((s) => ({ stop_id: s.stopId, name: s.name, lat: s.lat, lon: s.lon }))
+      : (routeDetail?.stops ?? []);
+    // Keep the selected stop on the map even after the route or vehicle that showed it is cleared
+    const s = stopData?.stop;
+    if (s && s.lat !== undefined && s.lon !== undefined && !base.some((b) => b.stop_id === s.stop_id)) {
+      return [...base, { stop_id: s.stop_id, name: s.name, lat: s.lat, lon: s.lon }];
+    }
+    return base;
+  }, [rideData, routeDetail, stopData]);
 
   // Trigger haptic alert when the selected get-off stop is next or current
   useEffect(() => {
@@ -187,205 +234,228 @@ export default function LiveMapPage() {
     setAlertStopId(null);
   }, [selectedId]);
 
-  const setParam = (key: string, value: string | null) => {
+  const setParams = (changes: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
-    if (value) next.set(key, value);
-    else next.delete(key);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
     setSearchParams(next, { replace: true });
   };
+  const setParam = (key: string, value: string | null) => setParams({ [key]: value });
 
-  const isLiveFresh = live.feedStatus === "fresh";
+  const selectVehicle = (id: string | null) => setParams({ vehicle: id, ...(id ? { stop: null, stopAgency: null } : {}) });
+  const selectStop = (stop: { stop_id: string } | null) =>
+    setParams({
+      stop: stop?.stop_id ?? null,
+      stopAgency: stop ? (activeVehicle?.agencyId ?? (agencyId !== "all" ? agencyId : null)) : null,
+      vehicle: null,
+    });
+
+  const toggleOnBoard = () => {
+    if (onBoardMode) {
+      setOnBoardMode(false);
+      stopWatching();
+    } else {
+      setOnBoardMode(true);
+      startWatching();
+    }
+  };
+
   const delayInfo = activeVehicle ? formatDelay(activeVehicle.scheduleDeviationSec) : null;
+  const noun = vehicleNounFor(activeAgency?.modes);
+  const agencyLabel = agencyId === "all" ? "all agencies" : agencyName(agencyId);
 
-  return (
-    <div className="sh-map-shell relative w-full flex-1 min-h-[360px] overflow-hidden">
-      {/* Full-bleed WebGL MapLibre Canvas */}
-      <TransitMap
-        center={userPos && onBoardMode && !activeVehicle ? [userPos.lon, userPos.lat] : center}
-        zoom={userPos && onBoardMode && !activeVehicle ? 14 : zoom}
-        vehicles={filteredVehicles}
-        selectedVehicleId={selectedId}
-        onSelectVehicle={(v) => setParam("vehicle", v.vehicleId)}
-        routeShape={effectiveRouteShape}
-        stops={effectiveStops}
-        userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
-        followSelected={followSelected}
-        heightClass="h-full w-full"
-        rounded={false}
-      />
+  const feedNote =
+    live.feedStatus === "missing_key"
+      ? "waiting for an API key"
+      : live.lastSuccessAt
+        ? `updated ${formatRelativeAge(live.lastSuccessAt)}`
+        : live.connection === "connecting" && settledAgency !== agencyId
+          ? "connecting"
+          : live.feedStatus === "fresh"
+            ? "live feed"
+            : "no recent update";
 
-      {/* Floating Top-Left HUD Bar */}
-      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 sm:max-w-2xl pointer-events-none">
-        <div className="sh-panel p-2 pl-3 flex flex-wrap items-center gap-2 pointer-events-auto">
-          <div className="flex items-center gap-2 pr-1 mr-auto">
-            <span
-              className="sh-pulse-dot"
-              style={{
-                color: isLiveFresh
-                  ? "var(--status-ok)"
-                  : live.feedStatus === "missing_key"
-                    ? "var(--status-warn)"
-                    : "var(--status-err)",
-                background: "currentColor",
-              }}
-            />
-            <span className="text-xl font-bold tabular-nums leading-none tracking-tight">
-              {filteredVehicles.length}
-            </span>
-            <span className="text-xs leading-tight" style={{ color: "var(--text-muted)" }}>
-              {filteredVehicles.length === 1 ? "vehicle" : "vehicles"}
-              <br className="sm:hidden" />
-              <span className="hidden sm:inline">, </span>
-              {live.feedStatus === "missing_key"
-                ? "awaiting API key"
-                : live.connection === "live_ws"
-                  ? "live"
-                  : live.feedStatus}
-              {live.lastSuccessAt ? `, updated ${formatRelativeAge(live.lastSuccessAt)}` : ""}
-            </span>
-          </div>
+  // Busiest other agency, offered when the current one has nothing on the road
+  const busiestOther = useMemo(
+    () =>
+      [...(agenciesData?.agencies ?? [])]
+        .filter((a) => a.id !== agencyId && a.activeVehicleCount > 0)
+        .sort((a, b) => b.activeVehicleCount - a.activeVehicleCount)[0],
+    [agenciesData, agencyId]
+  );
 
-          {agencyId !== "all" && (
-            <select
-              aria-label="Filter by route"
-              value={routeFilter}
-              onChange={(e) => setParam("route", e.target.value || null)}
-              className="sh-input order-last basis-full sm:order-none sm:basis-auto sm:max-w-[190px]"
-            >
-              <option value="">All routes</option>
-              {(routesData?.routes ?? []).map((r) => (
-                <option key={r.routeId} value={r.routeId}>
-                  {r.shortName} — {r.longName}
-                </option>
-              ))}
-            </select>
+  const nothingReporting =
+    (live.connection !== "connecting" || settledAgency === agencyId) &&
+    !live.vehicles.some((v) => v.freshness !== "stale") &&
+    live.feedStatus !== "missing_key";
+
+  // Most recent vehicle we still know about, for "Last seen 11:42 pm on route 99"
+  const lastSeenVehicle = useMemo(
+    () =>
+      [...live.vehicles].sort(
+        (a, b) => Date.parse(b.observedAt ?? b.receivedAt) - Date.parse(a.observedAt ?? a.receivedAt)
+      )[0],
+    [live.vehicles]
+  );
+
+  /* ---------- Panel pieces (shared by the desktop side panel and the phone sheet) ---------- */
+
+  const routeSelect =
+    agencyId !== "all" ? (
+      <select
+        aria-label="Filter by route"
+        value={routeFilter}
+        onChange={(e) => setParam("route", e.target.value || null)}
+        className="sh-input w-full min-w-0"
+      >
+        <option value="">All routes</option>
+        {routes.routes.map((r) => (
+          <option key={r.routeId} value={r.routeId}>
+            {r.shortName}
+            {r.longName ? `, ${r.longName}` : ""}
+          </option>
+        ))}
+      </select>
+    ) : null;
+
+  const emptyNotice = nothingReporting ? (
+    <EmptyState
+      actions={
+        <>
+          {busiestOther && (
+            <button type="button" className="sh-btn" onClick={() => setAgencyId(busiestOther.id)}>
+              Show {agencyShortName(busiestOther.id)}
+            </button>
           )}
+          {agencyId !== "all" && (
+            <button type="button" className="sh-btn" onClick={() => setAgencyId("all")}>
+              Show all
+            </button>
+          )}
+        </>
+      }
+    >
+      No {agencyId === "all" ? "" : `${agencyName(agencyId)} `}vehicles are reporting right now.
+      {routeFilter ? ` Route ${routes.shortName(routeFilter)} may not be running at this hour.` : ""}
+      {lastSeenVehicle
+        ? ` Last seen ${formatClock(lastSeenVehicle.observedAt ?? lastSeenVehicle.receivedAt)}${
+            lastSeenVehicle.routeId ? ` on route ${lastSeenVehicle.routeShortName ?? routes.shortName(lastSeenVehicle.routeId)}` : ""
+          }.`
+        : live.lastSuccessAt
+          ? ` Last feed update ${formatClock(live.lastSuccessAt)}.`
+          : ""}
+    </EmptyState>
+  ) : null;
 
-          <button
-            type="button"
-            className={`sh-btn px-3 ${onBoardMode ? "sh-highlight" : ""}`}
-            onClick={() => {
-              if (onBoardMode) {
-                setOnBoardMode(false);
-                stopWatching();
-              } else {
-                setOnBoardMode(true);
-                startWatching();
-              }
-            }}
-            title="Track my live location and detect which vehicle I'm on"
-          >
-            <LocateFixed size={13} /> {onBoardMode ? "Tracking me" : "On board"}
-          </button>
+  const notices = (
+    <>
+      {gpsError && (
+        <p className="m-0 text-sm font-bold" style={{ color: "var(--danger)" }} role="alert">
+          {gpsError}
+        </p>
+      )}
 
-          <Link to="/plan" className="sh-btn px-3 no-underline" title="Find which route to take">
-            <Navigation size={13} /> Plan
-          </Link>
-
-          <button
-            type="button"
-            className={`sh-btn px-3 ${showFilters ? "sh-highlight" : ""}`}
-            onClick={() => setShowFilters((s) => !s)}
-            aria-expanded={showFilters}
-          >
-            <SlidersHorizontal size={13} /> Filters
-          </button>
-
-          <button
-            type="button"
-            className={`sh-btn px-3 ${drawerOpen ? "sh-highlight" : ""}`}
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((d) => !d)}
-          >
-            <List size={13} /> List
-          </button>
+      {onBoardMode && watching && !activeVehicle && (
+        <div className="text-sm flex items-center justify-between gap-2" role="status">
+          <span>
+            {nearbyOnBoard?.nearbyVehicles.length
+              ? `Nearest: route ${nearbyOnBoard.nearbyVehicles[0]!.routeShortName ?? nearbyOnBoard.nearbyVehicles[0]!.routeId ?? "none"}, ${noun.toLowerCase()} ${nearbyOnBoard.nearbyVehicles[0]!.fleetNumber}, ${nearbyOnBoard.nearbyVehicles[0]!.distanceMeters} m away.`
+              : "Tracking your location to find the vehicle you are on."}
+          </span>
+          {nearbyOnBoard?.nearbyVehicles[0] && (
+            <button
+              type="button"
+              className="sh-btn"
+              onClick={() => {
+                selectVehicle(nearbyOnBoard.nearbyVehicles[0]!.vehicleId);
+                setFollowSelected(true);
+              }}
+            >
+              Select
+            </button>
+          )}
         </div>
+      )}
 
-        {gpsError && (
-          <div className="sh-panel p-2.5 text-xs pointer-events-auto" style={{ color: "var(--status-err)" }}>
-            {gpsError}
-          </div>
-        )}
+      {activeAgency?.liveStatus === "missing_key" && (
+        <p className="m-0 text-sm">
+          <strong>{activeAgency.name}</strong> needs <code>GO_TRANSIT_API_KEY</code> before live positions appear.{" "}
+          <Link to="/status">Feed status</Link>
+        </p>
+      )}
+    </>
+  );
 
-        {onBoardMode && watching && !activeVehicle && (
-          <div className="sh-panel sh-highlight px-3 py-2 text-xs pointer-events-auto flex items-center justify-between gap-2">
-            <span>
-              {nearbyOnBoard?.nearbyVehicles.length
-                ? `Nearest vehicle: Route ${nearbyOnBoard.nearbyVehicles[0]!.routeShortName ?? nearbyOnBoard.nearbyVehicles[0]!.routeId} (#${nearbyOnBoard.nearbyVehicles[0]!.fleetNumber}, ${nearbyOnBoard.nearbyVehicles[0]!.distanceMeters} m away)`
-                : "Tracking your GPS — scanning for the bus or train you're on…"}
-            </span>
-            {nearbyOnBoard?.nearbyVehicles[0] && (
-              <button
-                type="button"
-                className="sh-btn py-1 px-2 text-xs"
-                onClick={() => {
-                  setParam("vehicle", nearbyOnBoard.nearbyVehicles[0]!.vehicleId);
-                  setFollowSelected(true);
-                }}
-              >
-                Select
-              </button>
-            )}
-          </div>
-        )}
+  const filtersForm = (
+    <div className="flex flex-wrap items-end gap-3">
+      <div>
+        <label htmlFor="map-fleet-filter" className="sh-label">
+          Fleet or route number
+        </label>
+        <input
+          id="map-fleet-filter"
+          type="text"
+          inputMode="numeric"
+          value={fleetFilter}
+          onChange={(e) => setFleetFilter(e.target.value)}
+          placeholder="For example, 4401"
+          className="sh-input w-40"
+        />
+      </div>
+      <div>
+        <label htmlFor="map-fresh-filter" className="sh-label">
+          Reporting
+        </label>
+        <select
+          id="map-fresh-filter"
+          value={freshnessFilter}
+          onChange={(e) => setFreshnessFilter(e.target.value as "all" | "fresh" | "stale")}
+          className="sh-input"
+        >
+          <option value="all">All</option>
+          <option value="fresh">Live now</option>
+          <option value="stale">Not reporting</option>
+        </select>
+      </div>
+      <div>
+        <label htmlFor="map-assign-filter" className="sh-label">
+          Assignment
+        </label>
+        <select
+          id="map-assign-filter"
+          value={assignedFilter}
+          onChange={(e) => setAssignedFilter(e.target.value as "all" | "assigned" | "unassigned")}
+          className="sh-input"
+        >
+          <option value="all">All</option>
+          <option value="assigned">On a route</option>
+          <option value="unassigned">Not on a route</option>
+        </select>
+      </div>
+      <button
+        type="button"
+        className="sh-btn"
+        onClick={() => {
+          setFleetFilter("");
+          setFreshnessFilter("all");
+          setAssignedFilter("all");
+          setParam("route", null);
+        }}
+      >
+        Reset
+      </button>
+    </div>
+  );
 
-        {/* Missing Key Notice (GO Transit) */}
-        {activeAgency?.liveStatus === "missing_key" && (
-          <div
-            className="sh-panel sh-highlight px-3 py-2.5 text-sm pointer-events-auto flex items-center justify-between gap-3"
-          >
-            <span>
-              <strong>{activeAgency.name}</strong> needs <code>GO_TRANSIT_API_KEY</code> before live positions appear.
-            </span>
-            <Link to="/status" className="font-semibold shrink-0" style={{ color: "#000" }}>
-              Feed status
-            </Link>
-          </div>
-        )}
-
-        {/* Expandable Advanced Filter Popover */}
-        {showFilters && (
-          <div className="sh-panel p-3 flex flex-wrap items-end gap-3 text-xs pointer-events-auto">
-            <div>
-              <label className="block font-medium mb-1" style={{ color: "var(--text-muted)" }}>
-                Fleet or route number
-              </label>
-              <input
-                type="text"
-                value={fleetFilter}
-                onChange={(e) => setFleetFilter(e.target.value)}
-                placeholder="e.g. 4401, 504"
-                className="sh-input w-40"
-              />
-            </div>
-            <div>
-              <label className="block font-medium mb-1" style={{ color: "var(--text-muted)" }}>
-                Freshness
-              </label>
-              <select
-                value={freshnessFilter}
-                onChange={(e) => setFreshnessFilter(e.target.value as "all" | "fresh" | "stale")}
-                className="sh-input"
-              >
-                <option value="all">All</option>
-                <option value="fresh">Fresh only</option>
-                <option value="stale">Stale only</option>
-              </select>
-            </div>
-            <div>
-              <label className="block font-medium mb-1" style={{ color: "var(--text-muted)" }}>
-                Assignment
-              </label>
-              <select
-                value={assignedFilter}
-                onChange={(e) => setAssignedFilter(e.target.value as "all" | "assigned" | "unassigned")}
-                className="sh-input"
-              >
-                <option value="all">All</option>
-                <option value="assigned">Assigned</option>
-                <option value="unassigned">Unassigned</option>
-              </select>
-            </div>
+  const vehicleList =
+    filteredVehicles.length === 0 ? (
+      nothingReporting ? (
+        emptyNotice
+      ) : (
+        <EmptyState
+          actions={
             <button
               type="button"
               className="sh-btn"
@@ -393,307 +463,503 @@ export default function LiveMapPage() {
                 setFleetFilter("");
                 setFreshnessFilter("all");
                 setAssignedFilter("all");
-                setParam("route", null);
               }}
             >
-              Reset
+              Reset filters
             </button>
+          }
+        >
+          No vehicles match these filters.
+        </EmptyState>
+      )
+    ) : (
+      <ul className="sh-deps" style={{ borderTop: "var(--border-w) solid var(--line)" }}>
+        {filteredVehicles.slice(0, 200).map((v) => {
+          const stale = v.freshness === "stale";
+          const d = formatDelay(v.scheduleDeviationSec);
+          return (
+            <li key={`${v.agencyId}-${v.sourceVehicleId}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  selectVehicle(v.vehicleId);
+                  setFollowSelected(true);
+                }}
+                className={`sh-dep w-full text-left bg-transparent border-x-0 border-t-0 cursor-pointer ${stale ? "sh-dep-sched" : ""}`}
+                style={{ font: "inherit" }}
+                aria-current={v.vehicleId === selectedId ? "true" : undefined}
+              >
+                <RouteBadge
+                  size="lg"
+                  label={v.routeShortName ?? v.routeId ?? ""}
+                  color={routeColor(v.agencyId, v.routeId, v.routeColor)}
+                />
+                <span className="sh-dep-main">
+                  <span className="sh-dep-dest">
+                    {v.headsign ? v.headsign : v.routeId ? `Route ${v.routeShortName ?? v.routeId}` : "Not on a route"}
+                  </span>
+                  <span className="sh-dep-sub">
+                    {noun} {v.fleetNumber}
+                    {agencyId === "all" ? `, ${agencyShortName(v.agencyId)}` : ""}
+                    {v.stopName ? `. ${formatVehicleStatusLine(v)}` : ""}
+                  </span>
+                </span>
+                <span className="sh-dep-leader" aria-hidden="true" />
+                <span className={`text-sm text-right shrink-0 ${stale ? "sh-sched" : "font-bold"}`}>
+                  {stale ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}` : d.text}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    );
+
+  const stopPanel = selectedStopId ? (
+    <section aria-labelledby="stop-title" className="space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 id="stop-title" className="m-0 text-2xl font-extrabold leading-tight">
+            {stopData?.stop.name ?? (stopLoading ? "Loading stop…" : "Stop")}
+          </h2>
+          {stopData && (
+            <p className="m-0 text-sm sh-muted">
+              Next departures, updated {formatClock(stopData.serverTime)}
+            </p>
+          )}
+        </div>
+        {stopData && (
+          <button
+            type="button"
+            className="sh-btn sh-btn-icon sh-btn-quiet shrink-0"
+            aria-pressed={isFavorite(stopAgency, "stop", selectedStopId)}
+            aria-label={isFavorite(stopAgency, "stop", selectedStopId) ? "Remove saved stop" : "Save this stop"}
+            onClick={() =>
+              toggleFavorite({
+                agencyId: stopAgency,
+                entityType: "stop",
+                entityId: selectedStopId,
+                label: `${agencyShortName(stopAgency)} ${stopData.stop.name}`,
+              })
+            }
+          >
+            <Star
+              size={22}
+              aria-hidden="true"
+              fill={isFavorite(stopAgency, "stop", selectedStopId) ? "currentColor" : "none"}
+            />
+          </button>
+        )}
+      </div>
+      {isDesktop && routeSelect}
+      <LiveLegend className="pt-2" />
+      {stopData && stopData.departures.length === 0 ? (
+        <EmptyState>Nothing leaves this stop in the next 2 hours.</EmptyState>
+      ) : (
+        <ul className="sh-deps" style={{ borderTop: "var(--border-w) solid var(--line)" }}>
+          {(stopData?.departures ?? []).slice(0, 12).map((d, i) => (
+            <DepartureRow
+              key={`${d.tripId}-${i}`}
+              agencyId={stopAgency}
+              departure={d}
+              routeLabel={stopRoutes.shortName(d.routeId)}
+              routeColor={stopRoutes.color(d.routeId)}
+              vehicleNoun={vehicleNounFor(agenciesData?.agencies.find((a) => a.id === stopAgency)?.modes)}
+            />
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap gap-x-4 gap-y-2 pt-1 text-sm">
+        <Link to={`/stops/${stopAgency}/${encodeURIComponent(selectedStopId)}`}>Full stop page</Link>
+        <button
+          type="button"
+          className="bg-transparent border-0 p-0 underline cursor-pointer"
+          style={{ color: "var(--accent)", font: "inherit" }}
+          onClick={() => selectStop(null)}
+        >
+          Close stop
+        </button>
+      </div>
+    </section>
+  ) : null;
+
+  const vehiclePanel = activeVehicle ? (
+    <section aria-label="Selected vehicle" className="space-y-3">
+      <div className="flex items-start gap-3 pr-10 lg:pr-0">
+        <RouteBadge
+          size="lg"
+          label={activeVehicle.routeShortName ?? activeVehicle.routeId ?? ""}
+          color={routeColor(activeVehicle.agencyId, activeVehicle.routeId, activeVehicle.routeColor)}
+        />
+        <div className="min-w-0">
+          <h2 className="m-0 text-xl font-extrabold leading-tight">
+            {activeVehicle.headsign
+              ? activeVehicle.headsign
+              : activeVehicle.routeLongName || `${noun} ${activeVehicle.fleetNumber}`}
+          </h2>
+          <p className="m-0 text-sm sh-muted">
+            <span className="sh-fleet" style={{ fontSize: "1rem" }}>
+              {noun} {activeVehicle.fleetNumber}
+            </span>
+            , {agencyShortName(activeVehicle.agencyId)}.{" "}
+            {activeVehicle.freshness === "stale" ? (
+              <i>Last seen {formatClock(activeVehicle.observedAt ?? activeVehicle.receivedAt)}</i>
+            ) : (
+              <>
+                <b style={{ color: delayInfo?.tone === "err" ? "var(--danger)" : "var(--ink)" }}>{delayInfo?.text}</b>,
+                reported {activeVehicle.ageSeconds}s ago
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+
+      <div
+        className="py-2 flex items-center justify-between gap-2"
+        style={{ borderTop: "var(--border-w) solid var(--line)", borderBottom: "1px solid var(--rule)" }}
+      >
+        <div className="min-w-0 font-bold truncate">{formatVehicleStatusLine(activeVehicle)}</div>
+        {upcomingStops[0]?.etaMinutes !== null && upcomingStops[0]?.etaMinutes !== undefined && (
+          <span className="shrink-0 text-xl font-extrabold tabular-nums">
+            {upcomingStops[0].etaMinutes === 0 ? "Now" : `${upcomingStops[0].etaMinutes} min`}
+          </span>
+        )}
+      </div>
+
+      <dl className="grid grid-cols-3 m-0 text-sm" style={{ borderBottom: "1px solid var(--rule)" }}>
+        <div className="pb-2 pr-2">
+          <dt className="sh-muted">Speed</dt>
+          <dd className="m-0 font-bold tabular-nums">{formatSpeed(activeVehicle.speedMps, units)}</dd>
+        </div>
+        <div className="pb-2 px-2" style={{ borderLeft: "1px solid var(--rule)" }}>
+          <dt className="sh-muted">Heading</dt>
+          <dd className="m-0 font-bold tabular-nums">
+            {activeVehicle.bearingDeg !== null
+              ? `${Math.round(activeVehicle.bearingDeg)}° ${formatCompass(activeVehicle.bearingDeg)}`
+              : "Unknown"}
+          </dd>
+        </div>
+        <div className="pb-2 pl-2" style={{ borderLeft: "1px solid var(--rule)" }}>
+          <dt className="sh-muted">Stops left</dt>
+          <dd className="m-0 font-bold tabular-nums">{rideData?.stops.length ? upcomingStops.length : "Unknown"}</dd>
+        </div>
+      </dl>
+
+      {upcomingStops.length > 0 && (
+        <div>
+          <h3 className="m-0 text-base font-bold">Upcoming stops</h3>
+          <p className="m-0 text-sm sh-muted">Use the bell to get a vibration before your stop.</p>
+          <ul className="list-none m-0 p-0 mt-1">
+            {upcomingStops.slice(0, 12).map((s) => {
+              const isAlert = alertStopId === s.stopId;
+              const isCurrentOrNext = s.status === "current" || s.status === "next";
+              return (
+                <li
+                  key={`${s.stopId}-${s.stopSequence}`}
+                  className="flex items-center justify-between gap-2"
+                  style={{ borderBottom: "1px solid var(--rule)", minHeight: 44 }}
+                >
+                  <Link
+                    to={`/stops/${activeVehicle.agencyId}/${encodeURIComponent(s.stopId)}`}
+                    className={`truncate ${isCurrentOrNext ? "font-bold" : ""}`}
+                  >
+                    {s.name}
+                  </Link>
+                  <span className="flex items-center gap-1 shrink-0">
+                    <span className="tabular-nums text-sm sh-muted">
+                      {s.status === "current"
+                        ? "Here"
+                        : s.etaMinutes !== null
+                          ? `${s.etaMinutes} min`
+                          : `${Math.round(s.distanceMeters)} m`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAlertStopId(isAlert ? null : s.stopId)}
+                      aria-pressed={isAlert}
+                      aria-label={isAlert ? `Cancel alert for ${s.name}` : `Alert before ${s.name}`}
+                      className="sh-btn sh-btn-icon sh-btn-quiet"
+                      style={isAlert ? { color: "var(--accent)" } : undefined}
+                    >
+                      <Bell size={18} aria-hidden="true" fill={isAlert ? "currentColor" : "none"} />
+                    </button>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Link
+          to={`/vehicles/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.vehicleId)}`}
+          className="sh-btn sh-btn-primary flex-1"
+        >
+          Open vehicle
+        </Link>
+        <Link
+          to={`/history?agency=${activeVehicle.agencyId}&vehicle=${encodeURIComponent(activeVehicle.vehicleId)}`}
+          className="sh-btn"
+        >
+          <HistoryIcon size={18} aria-hidden="true" /> Replay
+        </Link>
+        <button
+          type="button"
+          className="sh-btn sh-btn-icon"
+          aria-pressed={followSelected}
+          aria-label="Follow this vehicle on the map"
+          onClick={() => setFollowSelected((f) => !f)}
+          style={followSelected ? { background: "var(--accent)", color: "var(--on-accent)", borderColor: "var(--accent)" } : undefined}
+        >
+          <Crosshair size={20} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="sh-btn sh-btn-icon"
+          aria-pressed={isFavorite(activeVehicle.agencyId, "vehicle", activeVehicle.vehicleId)}
+          aria-label="Save this vehicle"
+          onClick={() =>
+            toggleFavorite({
+              agencyId: activeVehicle.agencyId,
+              entityType: "vehicle",
+              entityId: activeVehicle.vehicleId,
+              label: `${agencyShortName(activeVehicle.agencyId)} ${activeVehicle.fleetNumber}`,
+            })
+          }
+        >
+          <Star
+            size={20}
+            aria-hidden="true"
+            fill={isFavorite(activeVehicle.agencyId, "vehicle", activeVehicle.vehicleId) ? "currentColor" : "none"}
+          />
+        </button>
+      </div>
+
+      {activeVehicle.tripId && (
+        <p className="m-0 text-sm flex justify-between gap-2">
+          <span className="sh-muted">Trip</span>
+          <Link to={`/trips/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.tripId)}`}>
+            {activeVehicle.tripId}
+          </Link>
+        </p>
+      )}
+
+      <button
+        type="button"
+        className="sh-btn w-full hidden lg:inline-flex"
+        onClick={() => selectVehicle(null)}
+      >
+        Close vehicle
+      </button>
+    </section>
+  ) : null;
+
+  const stopFocus: [number, number] | null =
+    selectedStopId && !activeVehicle && stopData?.stop.lon !== undefined && stopData.stop.lat !== undefined
+      ? [stopData.stop.lon, stopData.stop.lat]
+      : null;
+  const sheetOpen = !isDesktop && Boolean(activeVehicle || selectedStopId || showFilters || drawerOpen);
+
+  const map = (
+    <TransitMap
+      center={stopFocus ?? (userPos && onBoardMode && !activeVehicle ? [userPos.lon, userPos.lat] : center)}
+      zoom={stopFocus ? 15 : userPos && onBoardMode && !activeVehicle ? 14 : zoom}
+      bottomInset={sheetOpen ? Math.round(window.innerHeight * 0.4) : 0}
+      vehicles={filteredVehicles}
+      selectedVehicleId={selectedId}
+      onSelectVehicle={(v) => selectVehicle(v.vehicleId)}
+      routeShape={effectiveRouteShape}
+      routeShapeColor={shapeColor}
+      stops={effectiveStops}
+      selectedStopId={selectedStopId}
+      onSelectStop={(s) => selectStop(s)}
+      userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
+      followSelected={followSelected}
+      heightClass="h-full w-full"
+      rounded={false}
+    />
+  );
+
+  const countChip = (
+    <div className="sh-chip" role="status" aria-live="polite">
+      <b>{liveCount}</b>
+      <span className="leading-tight">
+        {liveCount === 1 ? "vehicle" : "vehicles"} live
+        <span className="block text-xs sh-muted">{feedNote}</span>
+      </span>
+    </div>
+  );
+
+  /* ---------- Desktop: fixed 400px panel + map ---------- */
+
+  if (isDesktop) {
+    return (
+      <div className="flex-1 min-h-0 flex">
+        <aside
+          aria-label="Departures and vehicles"
+          className="w-[400px] shrink-0 flex flex-col min-h-0"
+          style={{ borderRight: "var(--border-w) solid var(--line)" }}
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+            {notices}
+            {vehiclePanel ??
+              stopPanel ?? (
+                <section aria-labelledby="live-title" className="space-y-3">
+                  <h2 id="live-title" className="m-0 text-2xl font-extrabold leading-tight">
+                    Live vehicles, {agencyLabel}
+                  </h2>
+                  {routeSelect}
+                  <p className="m-0 text-sm sh-muted">
+                    {routeFilter
+                      ? "Pick a stop on the route to see its next departures."
+                      : "Choose a route to show its stops, then pick a stop for departures."}
+                  </p>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      className="sh-btn"
+                      aria-expanded={showFilters}
+                      onClick={() => setShowFilters((s) => !s)}
+                    >
+                      <SlidersHorizontal size={18} aria-hidden="true" /> Filters
+                    </button>
+                  </div>
+                  {showFilters && filtersForm}
+                  {nothingReporting && filteredVehicles.length > 0 && emptyNotice}
+                  {vehicleList}
+                </section>
+              )}
+          </div>
+          <div className="flex gap-2 p-5 pt-3" style={{ borderTop: "1px solid var(--rule)" }}>
+            <Link to="/plan" className="sh-btn sh-btn-primary flex-1">
+              Plan a trip
+            </Link>
+            <button
+              type="button"
+              className="sh-btn flex-1"
+              aria-pressed={onBoardMode}
+              onClick={toggleOnBoard}
+              style={onBoardMode ? { background: "var(--accent)", color: "var(--on-accent)", borderColor: "var(--accent)" } : undefined}
+            >
+              {onBoardMode ? "Tracking you" : "On board"}
+            </button>
+          </div>
+        </aside>
+
+        <div className="sh-map-shell relative flex-1 min-w-0 overflow-hidden">
+          {map}
+          <div className="absolute top-4 left-4 z-20">{countChip}</div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------- Phone and tablet: map, one control block, bottom sheet ---------- */
+
+  const sheetMode = activeVehicle ? "vehicle" : selectedStopId ? "stop" : showFilters ? "filters" : drawerOpen ? "list" : null;
+
+  return (
+    <div className="sh-map-shell relative w-full flex-1 min-h-[360px] overflow-hidden">
+      {map}
+
+      <div className="absolute top-2 left-2 right-2 z-20 flex flex-col gap-2 pointer-events-none">
+        <div className="sh-panel pointer-events-auto">
+          <div className="flex items-stretch" style={{ borderBottom: "var(--border-w) solid var(--line)" }}>
+            <div className="flex items-center gap-2 px-3 shrink-0" role="status" aria-live="polite">
+              <b className="text-[22px] font-extrabold tabular-nums leading-none">{liveCount}</b>
+              <span className="text-xs leading-tight">
+                live
+                <span className="block sh-muted">{feedNote}</span>
+              </span>
+            </div>
+            {routeSelect && (
+              <div className="flex-1 min-w-0" style={{ borderLeft: "var(--border-w) solid var(--line)" }}>
+                {React.cloneElement(routeSelect, {
+                  className: "sh-input w-full min-w-0 border-0",
+                  style: { background: "transparent" },
+                })}
+              </div>
+            )}
+          </div>
+          <div className="sh-iconrow" style={{ border: 0 }}>
+            <Link to="/plan">
+              <Navigation size={20} aria-hidden="true" />
+              Plan
+            </Link>
+            <button type="button" aria-pressed={onBoardMode} onClick={toggleOnBoard}>
+              <LocateFixed size={20} aria-hidden="true" />
+              {onBoardMode ? "Tracking" : "On board"}
+            </button>
+            <button
+              type="button"
+              aria-expanded={showFilters}
+              onClick={() => {
+                setShowFilters((s) => !s);
+                setDrawerOpen(false);
+              }}
+            >
+              <SlidersHorizontal size={20} aria-hidden="true" />
+              Filters
+            </button>
+            <button
+              type="button"
+              aria-expanded={drawerOpen}
+              onClick={() => {
+                setDrawerOpen((d) => !d);
+                setShowFilters(false);
+              }}
+            >
+              <List size={20} aria-hidden="true" />
+              List
+            </button>
+          </div>
+        </div>
+
+        {(gpsError || (onBoardMode && watching && !activeVehicle) || activeAgency?.liveStatus === "missing_key" || (nothingReporting && !sheetMode)) && (
+          <div className="sh-panel p-3 space-y-2 pointer-events-auto">
+            {notices}
+            {!sheetMode && emptyNotice}
           </div>
         )}
       </div>
 
-      {/* Floating Selected Vehicle Card (Desktop bottom-left / Mobile bottom sheet) */}
-      {activeVehicle && (
-        <aside
-          aria-label="Selected vehicle details"
-          className="sh-panel absolute bottom-0 left-0 right-0 sm:bottom-3 sm:left-3 sm:right-auto sm:w-[430px] max-h-[75vh] overflow-y-auto z-20 p-4 space-y-3 border-x-0 border-b-0 border-t-2 sm:border sm:border-t-2"
+      {sheetMode && (
+        <BottomSheet
+          label={
+            sheetMode === "vehicle"
+              ? "Vehicle details"
+              : sheetMode === "stop"
+                ? "Stop departures"
+                : sheetMode === "filters"
+                  ? "Filters"
+                  : "Vehicle list"
+          }
+          initial={sheetMode === "list" ? "full" : "peek"}
+          onClose={() => {
+            if (sheetMode === "vehicle") selectVehicle(null);
+            else if (sheetMode === "stop") selectStop(null);
+            else if (sheetMode === "filters") setShowFilters(false);
+            else setDrawerOpen(false);
+          }}
         >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-2.5 min-w-0">
-              <span
-                className="sh-route-shield text-white shrink-0 mt-0.5"
-                style={{ backgroundColor: activeVehicle.routeColor || "#E2001A" }}
-              >
-                {activeVehicle.routeShortName ?? activeVehicle.routeId ?? "—"}
-              </span>
-              <div className="min-w-0">
-                <div className="font-bold text-lg leading-tight tracking-tight truncate">
-                  {activeVehicle.headsign
-                    ? `To ${activeVehicle.headsign}`
-                    : activeVehicle.routeLongName || `Vehicle #${activeVehicle.fleetNumber}`}
-                </div>
-                <div className="text-xs mt-0.5 flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
-                  <span className="font-semibold tabular-nums" style={{ color: "var(--text)" }}>
-                    #{activeVehicle.fleetNumber}
-                  </span>
-                  <span className="sh-pill sh-pill-muted uppercase">{activeVehicle.agencyId}</span>
-                  <span
-                    className={
-                      delayInfo?.tone === "ok"
-                        ? "sh-pill sh-pill-ok"
-                        : delayInfo?.tone === "err"
-                          ? "sh-pill sh-pill-err"
-                          : delayInfo?.tone === "warn"
-                            ? "sh-pill sh-pill-warn"
-                            : "sh-pill sh-pill-muted"
-                    }
-                  >
-                    {delayInfo?.text}
-                  </span>
-                  <span className="tabular-nums">
-                    {activeVehicle.ageSeconds}s ago
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setParam("vehicle", null)}
-              aria-label="Close vehicle panel"
-              className="sh-btn sh-btn-icon shrink-0"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          <div
-            className="px-2.5 py-2 border-y text-xs flex items-center justify-between gap-2"
-            style={{ borderColor: "var(--ink)", background: "var(--surface)" }}
-          >
-            <div className="min-w-0">
-              <div className="uppercase tracking-wider text-[10px] font-bold" style={{ color: "var(--text-muted)" }}>
-                Current position
-              </div>
-              <div className="font-bold text-sm truncate">
-                {formatVehicleStatusLine(activeVehicle)}
-              </div>
-            </div>
-            {upcomingStops[0]?.etaMinutes !== null && upcomingStops[0]?.etaMinutes !== undefined && (
-              <span className="sh-pill sh-pill-ok shrink-0 tabular-nums">
-                {upcomingStops[0].etaMinutes === 0 ? "Now" : `${upcomingStops[0].etaMinutes} min`}
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-3 text-xs border-b" style={{ borderColor: "var(--border)" }}>
-            <div className="pb-2 pr-2">
-              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
-                Speed
-              </div>
-              <div className="font-bold text-sm tabular-nums">{formatSpeed(activeVehicle.speedMps, units)}</div>
-            </div>
-            <div className="pb-2 px-2 border-l" style={{ borderColor: "var(--border)" }}>
-              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
-                Heading
-              </div>
-              <div className="font-bold text-sm tabular-nums">
-                {activeVehicle.bearingDeg !== null
-                  ? `${Math.round(activeVehicle.bearingDeg)}° ${formatCompass(activeVehicle.bearingDeg)}`
-                  : "Unknown"}
-              </div>
-            </div>
-            <div className="pb-2 pl-2 border-l" style={{ borderColor: "var(--border)" }}>
-              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>Stops left</div>
-              <div className="font-bold text-sm tabular-nums">
-                {rideData?.stops.length ? upcomingStops.length : "—"}
-              </div>
-            </div>
-          </div>
-
-          {upcomingStops.length > 0 && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
-                <span>Upcoming stops</span>
-                <span>Tap bell for stop alert</span>
-              </div>
-              <div className="max-h-40 overflow-y-auto border divide-y" style={{ borderColor: "var(--border)" }}>
-                {upcomingStops.slice(0, 12).map((s) => {
-                  const isAlert = alertStopId === s.stopId;
-                  const isCurrentOrNext = s.status === "current" || s.status === "next";
-                  return (
-                    <div
-                      key={`${s.stopId}-${s.stopSequence}`}
-                      className={`px-2.5 py-1.5 text-xs flex items-center justify-between gap-2 ${
-                        isAlert ? "sh-highlight" : ""
-                      }`}
-                    >
-                      <div className="min-w-0 flex items-center gap-2">
-                        <span
-                          className="w-2 h-2 shrink-0"
-                          style={{
-                            background: isCurrentOrNext ? "var(--primary)" : "var(--text-muted)",
-                          }}
-                        />
-                        <Link
-                          to={`/stops/${activeVehicle.agencyId}/${encodeURIComponent(s.stopId)}`}
-                          className={`truncate ${isCurrentOrNext ? "font-bold" : ""}`}
-                          style={{ color: isAlert ? "#000" : "var(--text)" }}
-                        >
-                          {s.name}
-                        </Link>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className="tabular-nums text-[11px]" style={{ color: isAlert ? "#000" : "var(--text-muted)" }}>
-                          {s.status === "current"
-                            ? "Here"
-                            : s.etaMinutes !== null
-                              ? `${s.etaMinutes}m`
-                              : `${Math.round(s.distanceMeters)}m`}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setAlertStopId(isAlert ? null : s.stopId)}
-                          aria-label={isAlert ? `Cancel alert for ${s.name}` : `Alert before ${s.name}`}
-                          title={isAlert ? "Cancel stop alert" : "Vibrate before this stop"}
-                          className="p-1 bg-transparent border-0 cursor-pointer"
-                          style={{ color: isAlert ? "#000" : "var(--text-muted)" }}
-                        >
-                          <Bell size={12} fill={isAlert ? "currentColor" : "none"} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+          {sheetMode === "vehicle" && vehiclePanel}
+          {sheetMode === "stop" && stopPanel}
+          {sheetMode === "filters" && (
+            <div className="space-y-3">
+              <h2 className="m-0 text-xl font-extrabold">Filters</h2>
+              {filtersForm}
             </div>
           )}
-
-          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            <Link
-              to={`/vehicles/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.vehicleId)}`}
-              className="sh-btn sh-btn-primary flex-1"
-            >
-              Open vehicle
-            </Link>
-            <Link
-              to={`/history?agency=${activeVehicle.agencyId}&vehicle=${encodeURIComponent(activeVehicle.vehicleId)}`}
-              className="sh-btn"
-            >
-              <HistoryIcon size={13} /> Replay
-            </Link>
-            <button
-              type="button"
-              className={`sh-btn sh-btn-icon ${followSelected ? "sh-highlight" : ""}`}
-              aria-pressed={followSelected}
-              aria-label="Follow vehicle"
-              onClick={() => setFollowSelected((f) => !f)}
-              title="Follow vehicle"
-            >
-              <Crosshair size={13} />
-            </button>
-            <button
-              type="button"
-              className="sh-btn sh-btn-icon"
-              title="Favourite"
-              aria-label="Favourite"
-              onClick={() =>
-                toggleFavorite({
-                  agencyId: activeVehicle.agencyId,
-                  entityType: "vehicle",
-                  entityId: activeVehicle.vehicleId,
-                  label: `${activeVehicle.agencyId.toUpperCase()} #${activeVehicle.fleetNumber}`,
-                })
-              }
-            >
-              <Star
-                size={13}
-                fill={isFavorite(activeVehicle.agencyId, "vehicle", activeVehicle.vehicleId) ? "currentColor" : "none"}
-              />
-            </button>
-          </div>
-
-          {activeVehicle.tripId && (
-            <div className="text-xs pt-1 border-t flex justify-between" style={{ borderColor: "var(--border)" }}>
-              <span style={{ color: "var(--text-muted)" }}>Trip</span>
-              <Link
-                to={`/trips/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.tripId)}`}
-                className="font-mono font-semibold"
-              >
-                {activeVehicle.tripId}
-              </Link>
+          {sheetMode === "list" && (
+            <div className="space-y-2">
+              <h2 className="m-0 text-xl font-extrabold tabular-nums">
+                {filteredVehicles.length} {filteredVehicles.length === 1 ? "vehicle" : "vehicles"}
+              </h2>
+              {vehicleList}
             </div>
           )}
-        </aside>
-      )}
-
-      {/* Slide-over Accessible Vehicle List Drawer */}
-      {drawerOpen && (
-        <aside
-          aria-label="Live vehicles list"
-          className="sh-panel absolute inset-0 sm:inset-auto sm:top-3 sm:bottom-3 sm:right-3 sm:w-[380px] z-30 flex flex-col overflow-hidden border-0 sm:border"
-        >
-          <div className="pl-4 pr-2 py-2 border-b-2 flex items-center justify-between" style={{ borderColor: "var(--ink)" }}>
-            <div className="font-bold text-lg tracking-tight tabular-nums">
-              {filteredVehicles.length} vehicles
-            </div>
-            <button type="button" className="sh-btn sh-btn-icon" onClick={() => setDrawerOpen(false)} aria-label="Close list">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto overscroll-contain">
-            {filteredVehicles.length === 0 ? (
-              <div className="p-4 text-sm" style={{ color: "var(--text-muted)" }}>
-                No vehicles match these filters. Reset filters to see the whole fleet.
-              </div>
-            ) : (
-              filteredVehicles.slice(0, 200).map((v) => {
-                const d = formatDelay(v.scheduleDeviationSec);
-                const isSel = v.vehicleId === selectedId;
-                return (
-                  <button
-                    key={`${v.agencyId}-${v.sourceVehicleId}`}
-                    type="button"
-                    onClick={() => {
-                      setParam("vehicle", v.vehicleId);
-                      setFollowSelected(true);
-                    }}
-                    className={`w-full text-left px-4 py-3 flex items-center justify-between gap-3 cursor-pointer border-0 border-b ${
-                      isSel ? "sh-highlight" : "bg-transparent hover:bg-[var(--surface)]"
-                    }`}
-                    style={{ borderColor: "var(--border)", color: isSel ? "#000" : "var(--text)" }}
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span
-                        className="sh-route-shield text-white shrink-0"
-                        style={{ backgroundColor: v.routeColor || "#E2001A" }}
-                      >
-                        {v.routeShortName ?? v.routeId ?? "—"}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold tabular-nums truncate">
-                          {v.headsign ? `To ${v.headsign}` : `#${v.fleetNumber}`}{" "}
-                          <span className="font-normal uppercase" style={{ color: "var(--text-muted)" }}>
-                            {v.headsign ? `#${v.fleetNumber}` : v.agencyId}
-                          </span>
-                        </div>
-                        <div className="text-[11px] tabular-nums truncate" style={{ color: "var(--text-muted)" }}>
-                          {v.stopName
-                            ? formatVehicleStatusLine(v)
-                            : `${formatSpeed(v.speedMps, units)}, ${v.ageSeconds}s ago`}
-                        </div>
-                      </div>
-                    </div>
-                    <span className={`sh-pill sh-pill-${d.tone} shrink-0`}>{d.text}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </aside>
-      )}
-
-      {/* Subtle Bottom-Left Utility Strip when no vehicle selected */}
-      {!selectedVehicle && (
-        <div
-          className="sh-panel hidden sm:flex items-center gap-4 absolute bottom-3 left-3 z-10 px-3 py-1.5 text-xs"
-          style={{ color: "var(--text-muted)" }}
-        >
-          <Link to="/status" className="font-medium">Status</Link>
-          <Link to="/alerts" className="font-medium">Alerts</Link>
-          <a href="/openapi.json" target="_blank" rel="noreferrer" className="font-medium">API</a>
-          <Link to="/admin" className="font-medium">Admin</Link>
-        </div>
+        </BottomSheet>
       )}
     </div>
   );

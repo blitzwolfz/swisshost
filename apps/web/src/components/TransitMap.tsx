@@ -19,6 +19,8 @@ interface TransitMapProps {
   selectedStopId?: string | null;
   onSelectStop?: (stop: { stop_id: string; name: string }) => void;
   followSelected?: boolean;
+  /** Pixels hidden by an overlay at the bottom (e.g. a sheet); centring accounts for it. */
+  bottomInset?: number;
   heightClass?: string;
   rounded?: boolean;
 }
@@ -188,6 +190,7 @@ export function TransitMap({
   selectedStopId = null,
   onSelectStop,
   followSelected = false,
+  bottomInset = 0,
   heightClass = "h-[65vh] min-h-[420px]",
   rounded = true,
 }: TransitMapProps) {
@@ -495,8 +498,13 @@ export function TransitMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.easeTo({ center, zoom, duration: prefersReducedMotion() ? 0 : 450 });
-  }, [center[0], center[1], zoom]);
+    map.easeTo({
+      center,
+      zoom,
+      padding: { top: 0, left: 0, right: 0, bottom: bottomInset },
+      duration: prefersReducedMotion() ? 0 : 450,
+    });
+  }, [center[0], center[1], zoom, bottomInset]);
 
   /** Run now if layers exist, otherwise once the map finishes setting them up. */
   const whenReady = (source: string, fn: () => void) => {
