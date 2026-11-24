@@ -1074,6 +1074,7 @@
     color: var(--ink-soft);
   }
 
+  .maplibregl-ctrl-attrib-inner,
   .maplibregl-ctrl-attrib a {
     color: var(--ink-soft) !important;
   }
