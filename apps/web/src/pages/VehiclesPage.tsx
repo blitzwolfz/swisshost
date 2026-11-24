@@ -88,7 +88,7 @@ export function VehiclesPage() {
       <div className="sh-page-head">
         <div>
           <h1 className="sh-title">{agencyName(effectiveAgency)} fleet</h1>
-          <p className="sh-lede tabular-nums">
+          <p className="sh-lede">
             {data?.total ?? 0} {data?.total === 1 ? "vehicle" : "vehicles"} seen. Make and model are shown only where they are known.
           </p>
         </div>
@@ -106,7 +106,7 @@ export function VehiclesPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="For example, 3000"
-            className="sh-input w-44"
+            className="sh-input w-52"
           />
         </div>
         <div>
@@ -156,12 +156,12 @@ export function VehiclesPage() {
             <tr>
               <th scope="col">{sortButton("fleet", "Fleet")}</th>
               <th scope="col">{sortButton("route", "Route")}</th>
-              <th scope="col">Going to</th>
-              <th scope="col">Next stop</th>
+              <th scope="col" className="hidden md:table-cell">Going to</th>
+              <th scope="col" className="hidden md:table-cell">Next stop</th>
               <th scope="col">{sortButton("last_seen", "Status")}</th>
-              <th scope="col">Speed</th>
-              <th scope="col">Schedule</th>
-              <th scope="col">Equipment</th>
+              <th scope="col" className="hidden lg:table-cell">Speed</th>
+              <th scope="col" className="hidden lg:table-cell">Schedule</th>
+              <th scope="col" className="hidden lg:table-cell">Equipment</th>
             </tr>
           </thead>
           <tbody>
@@ -201,14 +201,14 @@ export function VehiclesPage() {
                             label={lv?.routeShortName ?? routes.shortName(routeId)}
                             color={routes.color(routeId, lv?.routeColor)}
                           />
-                          <span>{lv?.routeLongName ?? routes.longName(routeId)}</span>
+                          <span className="hidden sm:inline">{lv?.routeLongName ?? routes.longName(routeId)}</span>
                         </Link>
                       ) : (
                         <span className="sh-muted">Not on a route</span>
                       )}
                     </td>
-                    <td>{lv?.headsign ?? <span className="sh-muted">Unknown</span>}</td>
-                    <td>
+                    <td className="hidden md:table-cell">{lv?.headsign ?? <span className="sh-muted">Unknown</span>}</td>
+                    <td className="hidden md:table-cell">
                       {reportingNow && lv?.stopName ? lv.stopName : <span className="sh-muted">None</span>}
                     </td>
                     <td className="whitespace-nowrap">
@@ -218,11 +218,11 @@ export function VehiclesPage() {
                         <span className="sh-sched">Last seen {formatClock(v.last_seen_at)}</span>
                       )}
                     </td>
-                    <td className="tabular-nums whitespace-nowrap">{formatSpeed(lv?.speedMps ?? v.speed_mps, units)}</td>
-                    <td className="whitespace-nowrap" style={d.tone === "err" ? { color: "var(--danger)", fontWeight: 700 } : undefined}>
+                    <td className="hidden lg:table-cell tabular-nums whitespace-nowrap">{formatSpeed(lv?.speedMps ?? v.speed_mps, units)}</td>
+                    <td className="hidden lg:table-cell whitespace-nowrap" style={d.tone === "err" ? { color: "var(--danger)", fontWeight: 700 } : undefined}>
                       {d.text}
                     </td>
-                    <td className="sh-muted">
+                    <td className="hidden lg:table-cell sh-muted">
                       {v.manufacturer || v.model
                         ? `${v.year ?? ""} ${v.manufacturer ?? ""} ${v.model ?? ""}`.trim()
                         : v.vehicle_type !== "unknown"

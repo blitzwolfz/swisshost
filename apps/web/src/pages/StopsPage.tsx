@@ -144,7 +144,7 @@ export function StopDetailPage() {
       <div className="sh-page-head" style={{ marginTop: "0.25rem" }}>
         <div>
           <h1 className="sh-title">{data.stop.name}</h1>
-          <p className="sh-lede tabular-nums">
+          <p className="sh-lede">
             {data.stop.stop_code ? `Stop ${data.stop.stop_code}. ` : ""}Next departures, updated{" "}
             {formatClock(data.serverTime)}. Service day {data.serviceDate} ({data.timezone}).
           </p>

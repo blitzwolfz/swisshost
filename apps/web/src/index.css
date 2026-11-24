@@ -1089,6 +1089,9 @@
     padding: 0.25rem 0.5rem;
     font: 700 13px/1.2 var(--font-grotesk);
     white-space: nowrap;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     pointer-events: none;
   }
 }
