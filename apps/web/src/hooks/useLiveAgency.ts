@@ -11,6 +11,22 @@ interface LiveState {
   error: string | null;
 }
 
+function mergeEnrichedVehicle(prev: LiveVehicle | undefined, incoming: LiveVehicle): LiveVehicle {
+  if (!prev) return incoming;
+  const sameTrip = prev.tripId && prev.tripId === incoming.tripId;
+  const sameRoute = prev.routeId && prev.routeId === incoming.routeId;
+  const sameStop = prev.stopId && prev.stopId === incoming.stopId;
+  return {
+    ...incoming,
+    routeShortName: incoming.routeShortName ?? (sameRoute ? prev.routeShortName : undefined),
+    routeLongName: incoming.routeLongName ?? (sameRoute ? prev.routeLongName : undefined),
+    routeColor: incoming.routeColor ?? (sameRoute ? prev.routeColor : undefined),
+    headsign: incoming.headsign ?? (sameTrip ? prev.headsign : undefined),
+    patternTripId: incoming.patternTripId ?? (sameTrip ? prev.patternTripId : undefined),
+    stopName: incoming.stopName ?? (sameStop ? prev.stopName : undefined),
+  };
+}
+
 export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState {
   const [state, setState] = useState<LiveState>({
     vehicles: [],
@@ -131,12 +147,18 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
           const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
           if (msg.type === "snapshot") {
             const list = (msg.vehicles as LiveVehicle[]) ?? [];
+            const prevMap = mapRef.current;
             const m = new Map<string, LiveVehicle>();
-            for (const v of list) m.set(v.sourceVehicleId, v);
+            const mergedList: LiveVehicle[] = [];
+            for (const v of list) {
+              const merged = mergeEnrichedVehicle(prevMap.get(v.sourceVehicleId), v);
+              m.set(v.sourceVehicleId, merged);
+              mergedList.push(merged);
+            }
             mapRef.current = m;
             cursorRef.current = Number(msg.cursor || 0);
             setState({
-              vehicles: list,
+              vehicles: mergedList,
               feedStatus: String(msg.feedStatus || "unknown"),
               lastSuccessAt: (msg.lastSuccessAt as string | null) ?? null,
               connection: "live_ws",
@@ -147,7 +169,9 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
             const upserts = (msg.upserts as LiveVehicle[]) ?? [];
             const removed = (msg.removed as string[]) ?? [];
             for (const id of removed) mapRef.current.delete(id);
-            for (const v of upserts) mapRef.current.set(v.sourceVehicleId, v);
+            for (const v of upserts) {
+              mapRef.current.set(v.sourceVehicleId, mergeEnrichedVehicle(mapRef.current.get(v.sourceVehicleId), v));
+            }
             cursorRef.current = Number(msg.cursor || cursorRef.current);
             setState((prev) => ({
               ...prev,

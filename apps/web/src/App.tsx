@@ -6,6 +6,8 @@ const LiveMapPage = lazy(() => import("./pages/LiveMapPage"));
 const HistoryPage = lazy(() => import("./pages/HistoryPage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const InstallPage = lazy(() => import("./pages/InstallPage"));
+const PlanPage = lazy(() => import("./pages/PlanPage"));
+const RiderHomePage = lazy(() => import("./pages/RiderHomePage"));
 const RoutesPage = lazy(() => import("./pages/RoutesPage").then((m) => ({ default: m.RoutesPage })));
 const RouteDetailPage = lazy(() => import("./pages/RoutesPage").then((m) => ({ default: m.RouteDetailPage })));
 const VehiclesPage = lazy(() => import("./pages/VehiclesPage").then((m) => ({ default: m.VehiclesPage })));
@@ -142,6 +144,22 @@ export function App() {
             element={
               <Suspense fallback={<PageFallback />}>
                 <AccountPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/plan"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <PlanPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/simple"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <RiderHomePage />
               </Suspense>
             }
           />

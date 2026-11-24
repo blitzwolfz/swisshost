@@ -1,25 +1,48 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Bell,
   Crosshair,
   History as HistoryIcon,
   List,
+  LocateFixed,
+  Navigation,
   SlidersHorizontal,
   Star,
   X,
 } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
 import { useLiveAgency } from "../hooks/useLiveAgency";
+import { useUserLocation } from "../hooks/useUserLocation";
 import {
   apiJson,
+  formatCompass,
   formatDelay,
   formatRelativeAge,
   formatSpeed,
+  formatVehicleStatusLine,
   type AgencySummary,
   type LiveVehicle,
 } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
+
+interface RideTimeline {
+  agencyId: string;
+  vehicle: LiveVehicle;
+  routeShape: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+  stops: Array<{
+    stopId: string;
+    stopCode: string | null;
+    name: string;
+    lat: number;
+    lon: number;
+    stopSequence: number;
+    status: "passed" | "current" | "next" | "upcoming";
+    distanceMeters: number;
+    etaMinutes: number | null;
+  }>;
+}
 
 export default function LiveMapPage() {
   const { agencyId, units, isFavorite, toggleFavorite } = usePreferences();
@@ -33,6 +56,9 @@ export default function LiveMapPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [followSelected, setFollowSelected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [onBoardMode, setOnBoardMode] = useState(false);
+  const [alertStopId, setAlertStopId] = useState<string | null>(null);
+  const { position: userPos, watching, error: gpsError, startWatching, stopWatching } = useUserLocation();
 
   const { data: agenciesData } = useQuery({
     queryKey: ["agencies"],
@@ -100,6 +126,67 @@ export default function LiveMapPage() {
     );
   }, [selectedId, filteredVehicles, live.vehicles]);
 
+  // Fetch full destination headsign, route shape, and upcoming stops whenever a vehicle is selected
+  const { data: rideData } = useQuery({
+    queryKey: ["vehicle-ride", selectedVehicle?.agencyId, selectedVehicle?.vehicleId],
+    queryFn: () =>
+      apiJson<RideTimeline>(
+        `/api/v1/agencies/${selectedVehicle!.agencyId}/vehicles/${encodeURIComponent(selectedVehicle!.vehicleId)}/ride`
+      ),
+    enabled: Boolean(selectedVehicle),
+    refetchInterval: 20_000,
+    staleTime: 10_000,
+  });
+
+  // When On-Board GPS mode is enabled, auto-detect nearest live vehicle within 120m
+  const { data: nearbyOnBoard } = useQuery({
+    queryKey: ["nearby-onboard", userPos ? Math.round(userPos.lat * 1000) : null, userPos ? Math.round(userPos.lon * 1000) : null],
+    queryFn: () =>
+      apiJson<{ nearbyVehicles: Array<LiveVehicle & { distanceMeters: number }> }>(
+        `/api/v1/nearby?lat=${userPos!.lat}&lon=${userPos!.lon}&radius=800`
+      ),
+    enabled: onBoardMode && Boolean(userPos),
+    refetchInterval: 15_000,
+  });
+
+  useEffect(() => {
+    if (!onBoardMode || selectedId || !nearbyOnBoard?.nearbyVehicles.length) return;
+    const closest = nearbyOnBoard.nearbyVehicles[0]!;
+    if (closest.distanceMeters <= 120) {
+      const next = new URLSearchParams(searchParams);
+      next.set("vehicle", closest.vehicleId);
+      setSearchParams(next, { replace: true });
+      setFollowSelected(true);
+    }
+  }, [onBoardMode, selectedId, nearbyOnBoard]);
+
+  const activeVehicle = rideData?.vehicle ?? selectedVehicle;
+  const upcomingStops = (rideData?.stops ?? []).filter((s) => s.status !== "passed");
+  const effectiveRouteShape = rideData?.routeShape ?? routeDetail?.route.shapeGeoJson ?? null;
+  const effectiveStops = rideData?.stops.length
+    ? rideData.stops.map((s) => ({ stop_id: s.stopId, name: s.name, lat: s.lat, lon: s.lon }))
+    : routeDetail?.stops;
+
+  // Trigger haptic alert when the selected get-off stop is next or current
+  useEffect(() => {
+    if (!alertStopId || !rideData?.stops.length) return;
+    const target = rideData.stops.find((s) => s.stopId === alertStopId);
+    if (target && (target.status === "next" || target.status === "current")) {
+      if ("vibrate" in navigator) {
+        try {
+          navigator.vibrate([220, 100, 220]);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, [alertStopId, rideData]);
+
+  // Clear stop alert when switching vehicles
+  useEffect(() => {
+    setAlertStopId(null);
+  }, [selectedId]);
+
   const setParam = (key: string, value: string | null) => {
     const next = new URLSearchParams(searchParams);
     if (value) next.set(key, value);
@@ -108,26 +195,27 @@ export default function LiveMapPage() {
   };
 
   const isLiveFresh = live.feedStatus === "fresh";
-  const delayInfo = selectedVehicle ? formatDelay(selectedVehicle.scheduleDeviationSec) : null;
+  const delayInfo = activeVehicle ? formatDelay(activeVehicle.scheduleDeviationSec) : null;
 
   return (
     <div className="sh-map-shell relative w-full flex-1 min-h-[360px] overflow-hidden">
       {/* Full-bleed WebGL MapLibre Canvas */}
       <TransitMap
-        center={center}
-        zoom={zoom}
+        center={userPos && onBoardMode && !activeVehicle ? [userPos.lon, userPos.lat] : center}
+        zoom={userPos && onBoardMode && !activeVehicle ? 14 : zoom}
         vehicles={filteredVehicles}
         selectedVehicleId={selectedId}
         onSelectVehicle={(v) => setParam("vehicle", v.vehicleId)}
-        routeShape={routeDetail?.route.shapeGeoJson ?? null}
-        stops={routeDetail?.stops}
+        routeShape={effectiveRouteShape}
+        stops={effectiveStops}
+        userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
         followSelected={followSelected}
         heightClass="h-full w-full"
         rounded={false}
       />
 
       {/* Floating Top-Left HUD Bar */}
-      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 sm:max-w-xl pointer-events-none">
+      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 sm:max-w-2xl pointer-events-none">
         <div className="sh-panel p-2 pl-3 flex flex-wrap items-center gap-2 pointer-events-auto">
           <div className="flex items-center gap-2 pr-1 mr-auto">
             <span
@@ -162,7 +250,7 @@ export default function LiveMapPage() {
               aria-label="Filter by route"
               value={routeFilter}
               onChange={(e) => setParam("route", e.target.value || null)}
-              className="sh-input order-last basis-full sm:order-none sm:basis-auto sm:max-w-[200px]"
+              className="sh-input order-last basis-full sm:order-none sm:basis-auto sm:max-w-[190px]"
             >
               <option value="">All routes</option>
               {(routesData?.routes ?? []).map((r) => (
@@ -172,6 +260,27 @@ export default function LiveMapPage() {
               ))}
             </select>
           )}
+
+          <button
+            type="button"
+            className={`sh-btn px-3 ${onBoardMode ? "sh-highlight" : ""}`}
+            onClick={() => {
+              if (onBoardMode) {
+                setOnBoardMode(false);
+                stopWatching();
+              } else {
+                setOnBoardMode(true);
+                startWatching();
+              }
+            }}
+            title="Track my live location and detect which vehicle I'm on"
+          >
+            <LocateFixed size={13} /> {onBoardMode ? "Tracking me" : "On board"}
+          </button>
+
+          <Link to="/plan" className="sh-btn px-3 no-underline" title="Find which route to take">
+            <Navigation size={13} /> Plan
+          </Link>
 
           <button
             type="button"
@@ -191,6 +300,34 @@ export default function LiveMapPage() {
             <List size={13} /> List
           </button>
         </div>
+
+        {gpsError && (
+          <div className="sh-panel p-2.5 text-xs pointer-events-auto" style={{ color: "var(--status-err)" }}>
+            {gpsError}
+          </div>
+        )}
+
+        {onBoardMode && watching && !activeVehicle && (
+          <div className="sh-panel sh-highlight px-3 py-2 text-xs pointer-events-auto flex items-center justify-between gap-2">
+            <span>
+              {nearbyOnBoard?.nearbyVehicles.length
+                ? `Nearest vehicle: Route ${nearbyOnBoard.nearbyVehicles[0]!.routeShortName ?? nearbyOnBoard.nearbyVehicles[0]!.routeId} (#${nearbyOnBoard.nearbyVehicles[0]!.fleetNumber}, ${nearbyOnBoard.nearbyVehicles[0]!.distanceMeters} m away)`
+                : "Tracking your GPS — scanning for the bus or train you're on…"}
+            </span>
+            {nearbyOnBoard?.nearbyVehicles[0] && (
+              <button
+                type="button"
+                className="sh-btn py-1 px-2 text-xs"
+                onClick={() => {
+                  setParam("vehicle", nearbyOnBoard.nearbyVehicles[0]!.vehicleId);
+                  setFollowSelected(true);
+                }}
+              >
+                Select
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Missing Key Notice (GO Transit) */}
         {activeAgency?.liveStatus === "missing_key" && (
@@ -266,25 +403,30 @@ export default function LiveMapPage() {
       </div>
 
       {/* Floating Selected Vehicle Card (Desktop bottom-left / Mobile bottom sheet) */}
-      {selectedVehicle && (
+      {activeVehicle && (
         <aside
           aria-label="Selected vehicle details"
-          className="sh-panel absolute bottom-0 left-0 right-0 sm:bottom-3 sm:left-3 sm:right-auto sm:w-[420px] z-20 p-4 space-y-4 border-x-0 border-b-0 border-t-2 sm:border sm:border-t-2"
+          className="sh-panel absolute bottom-0 left-0 right-0 sm:bottom-3 sm:left-3 sm:right-auto sm:w-[430px] max-h-[75vh] overflow-y-auto z-20 p-4 space-y-3 border-x-0 border-b-0 border-t-2 sm:border sm:border-t-2"
         >
           <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-start gap-2.5 min-w-0">
               <span
-                className="sh-route-shield text-white"
-                style={{ backgroundColor: selectedVehicle.routeColor || "#E2001A" }}
+                className="sh-route-shield text-white shrink-0 mt-0.5"
+                style={{ backgroundColor: activeVehicle.routeColor || "#E2001A" }}
               >
-                {selectedVehicle.routeShortName ?? selectedVehicle.routeId ?? "—"}
+                {activeVehicle.routeShortName ?? activeVehicle.routeId ?? "—"}
               </span>
-              <div>
-                <div className="font-bold text-xl leading-tight tracking-tight tabular-nums flex items-center gap-2">
-                  Vehicle #{selectedVehicle.fleetNumber}
-                  <span className="sh-pill sh-pill-muted uppercase">{selectedVehicle.agencyId}</span>
+              <div className="min-w-0">
+                <div className="font-bold text-lg leading-tight tracking-tight truncate">
+                  {activeVehicle.headsign
+                    ? `To ${activeVehicle.headsign}`
+                    : activeVehicle.routeLongName || `Vehicle #${activeVehicle.fleetNumber}`}
                 </div>
-                <div className="text-xs mt-0.5 flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
+                <div className="text-xs mt-0.5 flex flex-wrap items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
+                  <span className="font-semibold tabular-nums" style={{ color: "var(--text)" }}>
+                    #{activeVehicle.fleetNumber}
+                  </span>
+                  <span className="sh-pill sh-pill-muted uppercase">{activeVehicle.agencyId}</span>
                   <span
                     className={
                       delayInfo?.tone === "ok"
@@ -299,7 +441,7 @@ export default function LiveMapPage() {
                     {delayInfo?.text}
                   </span>
                   <span className="tabular-nums">
-                    {selectedVehicle.ageSeconds}s ago ({selectedVehicle.timestampBasis})
+                    {activeVehicle.ageSeconds}s ago
                   </span>
                 </div>
               </div>
@@ -309,42 +451,123 @@ export default function LiveMapPage() {
               type="button"
               onClick={() => setParam("vehicle", null)}
               aria-label="Close vehicle panel"
-              className="sh-btn sh-btn-icon"
+              className="sh-btn sh-btn-icon shrink-0"
             >
               <X size={16} />
             </button>
           </div>
 
-          <div className="grid grid-cols-3 text-xs border-t" style={{ borderColor: "var(--ink)" }}>
-            <div className="py-2 pr-2">
+          <div
+            className="px-2.5 py-2 border-y text-xs flex items-center justify-between gap-2"
+            style={{ borderColor: "var(--ink)", background: "var(--surface)" }}
+          >
+            <div className="min-w-0">
+              <div className="uppercase tracking-wider text-[10px] font-bold" style={{ color: "var(--text-muted)" }}>
+                Current position
+              </div>
+              <div className="font-bold text-sm truncate">
+                {formatVehicleStatusLine(activeVehicle)}
+              </div>
+            </div>
+            {upcomingStops[0]?.etaMinutes !== null && upcomingStops[0]?.etaMinutes !== undefined && (
+              <span className="sh-pill sh-pill-ok shrink-0 tabular-nums">
+                {upcomingStops[0].etaMinutes === 0 ? "Now" : `${upcomingStops[0].etaMinutes} min`}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-3 text-xs border-b" style={{ borderColor: "var(--border)" }}>
+            <div className="pb-2 pr-2">
               <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
                 Speed
               </div>
-              <div className="font-bold text-base tabular-nums">{formatSpeed(selectedVehicle.speedMps, units)}</div>
+              <div className="font-bold text-sm tabular-nums">{formatSpeed(activeVehicle.speedMps, units)}</div>
             </div>
-            <div className="py-2 px-2 border-l" style={{ borderColor: "var(--border)" }}>
+            <div className="pb-2 px-2 border-l" style={{ borderColor: "var(--border)" }}>
               <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
                 Heading
               </div>
-              <div className="font-bold text-base tabular-nums">
-                {selectedVehicle.bearingDeg !== null ? `${Math.round(selectedVehicle.bearingDeg)}°` : "Unknown"}
+              <div className="font-bold text-sm tabular-nums">
+                {activeVehicle.bearingDeg !== null
+                  ? `${Math.round(activeVehicle.bearingDeg)}° ${formatCompass(activeVehicle.bearingDeg)}`
+                  : "Unknown"}
               </div>
             </div>
-            <div className="py-2 pl-2 border-l" style={{ borderColor: "var(--border)" }}>
-              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>Status</div>
-              <div className="font-bold text-base truncate capitalize">{selectedVehicle.currentStatus?.replace(/_/g, " ") || "In transit"}</div>
+            <div className="pb-2 pl-2 border-l" style={{ borderColor: "var(--border)" }}>
+              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>Stops left</div>
+              <div className="font-bold text-sm tabular-nums">
+                {rideData?.stops.length ? upcomingStops.length : "—"}
+              </div>
             </div>
           </div>
 
+          {upcomingStops.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span>Upcoming stops</span>
+                <span>Tap bell for stop alert</span>
+              </div>
+              <div className="max-h-40 overflow-y-auto border divide-y" style={{ borderColor: "var(--border)" }}>
+                {upcomingStops.slice(0, 12).map((s) => {
+                  const isAlert = alertStopId === s.stopId;
+                  const isCurrentOrNext = s.status === "current" || s.status === "next";
+                  return (
+                    <div
+                      key={`${s.stopId}-${s.stopSequence}`}
+                      className={`px-2.5 py-1.5 text-xs flex items-center justify-between gap-2 ${
+                        isAlert ? "sh-highlight" : ""
+                      }`}
+                    >
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span
+                          className="w-2 h-2 shrink-0"
+                          style={{
+                            background: isCurrentOrNext ? "var(--primary)" : "var(--text-muted)",
+                          }}
+                        />
+                        <Link
+                          to={`/stops/${activeVehicle.agencyId}/${encodeURIComponent(s.stopId)}`}
+                          className={`truncate ${isCurrentOrNext ? "font-bold" : ""}`}
+                          style={{ color: isAlert ? "#000" : "var(--text)" }}
+                        >
+                          {s.name}
+                        </Link>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="tabular-nums text-[11px]" style={{ color: isAlert ? "#000" : "var(--text-muted)" }}>
+                          {s.status === "current"
+                            ? "Here"
+                            : s.etaMinutes !== null
+                              ? `${s.etaMinutes}m`
+                              : `${Math.round(s.distanceMeters)}m`}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setAlertStopId(isAlert ? null : s.stopId)}
+                          aria-label={isAlert ? `Cancel alert for ${s.name}` : `Alert before ${s.name}`}
+                          title={isAlert ? "Cancel stop alert" : "Vibrate before this stop"}
+                          className="p-1 bg-transparent border-0 cursor-pointer"
+                          style={{ color: isAlert ? "#000" : "var(--text-muted)" }}
+                        >
+                          <Bell size={12} fill={isAlert ? "currentColor" : "none"} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             <Link
-              to={`/vehicles/${selectedVehicle.agencyId}/${encodeURIComponent(selectedVehicle.vehicleId)}`}
+              to={`/vehicles/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.vehicleId)}`}
               className="sh-btn sh-btn-primary flex-1"
             >
               Open vehicle
             </Link>
             <Link
-              to={`/history?agency=${selectedVehicle.agencyId}&vehicle=${encodeURIComponent(selectedVehicle.vehicleId)}`}
+              to={`/history?agency=${activeVehicle.agencyId}&vehicle=${encodeURIComponent(activeVehicle.vehicleId)}`}
               className="sh-btn"
             >
               <HistoryIcon size={13} /> Replay
@@ -366,28 +589,28 @@ export default function LiveMapPage() {
               aria-label="Favourite"
               onClick={() =>
                 toggleFavorite({
-                  agencyId: selectedVehicle.agencyId,
+                  agencyId: activeVehicle.agencyId,
                   entityType: "vehicle",
-                  entityId: selectedVehicle.vehicleId,
-                  label: `${selectedVehicle.agencyId.toUpperCase()} #${selectedVehicle.fleetNumber}`,
+                  entityId: activeVehicle.vehicleId,
+                  label: `${activeVehicle.agencyId.toUpperCase()} #${activeVehicle.fleetNumber}`,
                 })
               }
             >
               <Star
                 size={13}
-                fill={isFavorite(selectedVehicle.agencyId, "vehicle", selectedVehicle.vehicleId) ? "currentColor" : "none"}
+                fill={isFavorite(activeVehicle.agencyId, "vehicle", activeVehicle.vehicleId) ? "currentColor" : "none"}
               />
             </button>
           </div>
 
-          {selectedVehicle.tripId && (
+          {activeVehicle.tripId && (
             <div className="text-xs pt-1 border-t flex justify-between" style={{ borderColor: "var(--border)" }}>
               <span style={{ color: "var(--text-muted)" }}>Trip</span>
               <Link
-                to={`/trips/${selectedVehicle.agencyId}/${encodeURIComponent(selectedVehicle.tripId)}`}
+                to={`/trips/${activeVehicle.agencyId}/${encodeURIComponent(activeVehicle.tripId)}`}
                 className="font-mono font-semibold"
               >
-                {selectedVehicle.tripId}
+                {activeVehicle.tripId}
               </Link>
             </div>
           )}
@@ -439,13 +662,15 @@ export default function LiveMapPage() {
                       </span>
                       <div className="min-w-0">
                         <div className="text-sm font-bold tabular-nums truncate">
-                          #{v.fleetNumber}{" "}
+                          {v.headsign ? `To ${v.headsign}` : `#${v.fleetNumber}`}{" "}
                           <span className="font-normal uppercase" style={{ color: "var(--text-muted)" }}>
-                            {v.agencyId}
+                            {v.headsign ? `#${v.fleetNumber}` : v.agencyId}
                           </span>
                         </div>
-                        <div className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-                          {formatSpeed(v.speedMps, units)}, {v.ageSeconds}s ago
+                        <div className="text-[11px] tabular-nums truncate" style={{ color: "var(--text-muted)" }}>
+                          {v.stopName
+                            ? formatVehicleStatusLine(v)
+                            : `${formatSpeed(v.speedMps, units)}, ${v.ageSeconds}s ago`}
                         </div>
                       </div>
                     </div>

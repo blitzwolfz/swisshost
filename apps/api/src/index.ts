@@ -327,16 +327,9 @@ app.get("/api/v1/agencies/:id/vehicles", async (c) => {
     });
   }
 
-  // Enrich with active route short names & colors from KV/D1
-  const routeMeta = await getRouteLookup(c.env, agencyId);
-  vehicles = vehicles.map((v) => {
-    const rm = v.routeId ? routeMeta.get(v.routeId) : undefined;
-    return {
-      ...v,
-      routeShortName: rm?.shortName ?? v.routeId,
-      routeColor: rm?.color ?? null,
-    };
-  });
+  // Enrich with active route names/colors, trip headsigns, and resolved stop names from KV/D1
+  const lookups = await getAgencyStaticLookups(c.env, agencyId);
+  vehicles = vehicles.map((v) => enrichVehicleWithLookups(v, lookups));
 
   if (routeId) vehicles = vehicles.filter((v) => v.routeId === routeId);
   if (q) {
@@ -463,11 +456,12 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
   const agencyId = c.req.param("id");
   const vehicleId = decodeURIComponent(c.req.param("vehicle"));
 
-  const [vehicle, liveVeh, aliases, assignments] = await Promise.all([
+  const [vehicle, rawLiveVeh, lookups, aliases, assignments] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM vehicles WHERE agency_id = ? AND (vehicle_id = ? OR fleet_number = ?) LIMIT 1")
       .bind(agencyId, vehicleId, vehicleId)
       .first<Record<string, unknown>>(),
     c.env.AGENCY_LIVE.getByName(agencyId).getVehicle(vehicleId),
+    getAgencyStaticLookups(c.env, agencyId),
     c.env.DB.prepare("SELECT * FROM vehicle_aliases WHERE agency_id = ? AND vehicle_id = ? ORDER BY valid_from DESC")
       .bind(agencyId, vehicleId)
       .all(),
@@ -479,6 +473,8 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
       .all(),
   ]);
 
+  const liveVeh = rawLiveVeh ? enrichVehicleWithLookups(rawLiveVeh, lookups) : null;
+
   const latest = liveVeh
     ? {
         agency_id: liveVeh.agencyId,
@@ -486,7 +482,11 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
         vehicle_id: liveVeh.vehicleId,
         fleet_number: liveVeh.fleetNumber,
         route_id: liveVeh.routeId,
+        route_short_name: liveVeh.routeShortName ?? liveVeh.routeId,
+        route_long_name: liveVeh.routeLongName ?? null,
+        headsign: liveVeh.headsign ?? null,
         trip_id: liveVeh.tripId,
+        pattern_trip_id: liveVeh.patternTripId ?? null,
         block_id: liveVeh.blockId,
         direction_id: liveVeh.directionId,
         lat: liveVeh.lat,
@@ -496,6 +496,7 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
         schedule_deviation_sec: liveVeh.scheduleDeviationSec,
         current_status: liveVeh.currentStatus,
         stop_id: liveVeh.stopId,
+        stop_name: liveVeh.stopName ?? null,
         stop_sequence: liveVeh.stopSequence,
         occupancy_status: liveVeh.occupancyStatus,
         observed_at: liveVeh.observedAt,
@@ -525,6 +526,651 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
     aliases: aliases.results,
     recentAssignments: assignments.results,
   });
+});
+
+// ---------------------------------------------------------------------------
+// On-Board Live Ride Timeline (upcoming stops, ETAs, and route shape)
+// ---------------------------------------------------------------------------
+app.get("/api/v1/agencies/:id/vehicles/:vehicle/ride", async (c) => {
+  const agencyId = c.req.param("id");
+  const vehicleId = decodeURIComponent(c.req.param("vehicle"));
+
+  const [rawVeh, lookups, versionId] = await Promise.all([
+    c.env.AGENCY_LIVE.getByName(agencyId).getVehicle(vehicleId),
+    getAgencyStaticLookups(c.env, agencyId),
+    getActiveVersionId(c.env.DB, agencyId),
+  ]);
+
+  if (!rawVeh) {
+    return c.json(createProblemDetails(404, "Vehicle not live", `Vehicle ${vehicleId} is not currently reporting live GPS.`), 404);
+  }
+
+  const veh = enrichVehicleWithLookups(rawVeh, lookups);
+  let patternTripId = veh.patternTripId ?? null;
+  let routeShape: { type: "LineString"; coordinates: Array<[number, number]> } | null = null;
+
+  if (versionId && veh.routeId) {
+    const routeRow = await c.env.DB.prepare(
+      "SELECT shape_geojson FROM routes WHERE agency_id = ? AND version_id = ? AND route_id = ?"
+    )
+      .bind(agencyId, versionId, veh.routeId)
+      .first<{ shape_geojson: string | null }>();
+    if (routeRow?.shape_geojson) {
+      routeShape = JSON.parse(routeRow.shape_geojson) as { type: "LineString"; coordinates: Array<[number, number]> };
+    }
+
+    if (!patternTripId) {
+      const fallbackTrip = await c.env.DB.prepare(
+        `SELECT trip_id, headsign FROM trips WHERE agency_id = ? AND version_id = ? AND route_id = ?
+         ORDER BY CASE WHEN direction_id = ? THEN 0 ELSE 1 END LIMIT 1`
+      )
+        .bind(agencyId, versionId, veh.routeId, veh.directionId ?? 0)
+        .first<{ trip_id: string; headsign: string | null }>();
+      if (fallbackTrip) {
+        patternTripId = fallbackTrip.trip_id;
+        if (!veh.headsign && fallbackTrip.headsign) veh.headsign = fallbackTrip.headsign;
+      }
+    }
+  }
+
+  let orderedStops: Array<{
+    stopId: string;
+    stopCode: string | null;
+    name: string;
+    lat: number;
+    lon: number;
+    stopSequence: number;
+    status: "passed" | "current" | "next" | "upcoming";
+    distanceMeters: number;
+    etaMinutes: number | null;
+  }> = [];
+
+  if (versionId && patternTripId) {
+    const stRows = await c.env.DB.prepare(
+      `SELECT st.stop_sequence, st.stop_id, s.stop_code, s.name, s.lat, s.lon
+       FROM stop_times st
+       JOIN stops s ON s.agency_id = st.agency_id AND s.version_id = st.version_id AND s.stop_id = st.stop_id
+       WHERE st.agency_id = ? AND st.version_id = ? AND st.trip_id = ?
+       ORDER BY st.stop_sequence ASC`
+    )
+      .bind(agencyId, versionId, patternTripId)
+      .all<{
+        stop_sequence: number;
+        stop_id: string;
+        stop_code: string | null;
+        name: string;
+        lat: number;
+        lon: number;
+      }>();
+
+    const list = stRows.results;
+    if (list.length > 0) {
+      // Locate vehicle along the ordered stop sequence (prefer explicit stopId match, else nearest stop)
+      let currentIdx = -1;
+      if (veh.stopId) {
+        currentIdx = list.findIndex((s) => s.stop_id === veh.stopId);
+      }
+      if (currentIdx === -1) {
+        let bestDist = Infinity;
+        for (let i = 0; i < list.length; i++) {
+          const d = haversineMeters(veh.lat, veh.lon, list[i]!.lat, list[i]!.lon);
+          if (d < bestDist) {
+            bestDist = d;
+            currentIdx = i;
+          }
+        }
+      }
+
+      const speedMps = veh.speedMps && veh.speedMps > 2.5 ? Math.min(20, veh.speedMps) : 6.2; // ~22 km/h urban average
+      let cumDist = 0;
+
+      orderedStops = list.map((s, idx) => {
+        const directDist = Math.round(haversineMeters(veh.lat, veh.lon, s.lat, s.lon));
+        let status: "passed" | "current" | "next" | "upcoming";
+        let etaMinutes: number | null = null;
+
+        if (idx < currentIdx) {
+          status = "passed";
+        } else if (idx === currentIdx) {
+          status = veh.currentStatus === "STOPPED_AT" || directDist < 65 ? "current" : "next";
+          cumDist = directDist;
+          etaMinutes = status === "current" ? 0 : Math.max(1, Math.round(directDist / speedMps / 60));
+        } else {
+          const prev = list[idx - 1]!;
+          const segDist = haversineMeters(prev.lat, prev.lon, s.lat, s.lon);
+          cumDist += Math.max(segDist, 80);
+          status = idx === currentIdx + 1 && (veh.currentStatus === "STOPPED_AT" || directDist < 65) ? "next" : "upcoming";
+          // Add ~18s average dwell per intermediate stop
+          const stopsAhead = idx - currentIdx;
+          etaMinutes = Math.max(1, Math.round((cumDist / speedMps + stopsAhead * 18) / 60));
+        }
+
+        return {
+          stopId: s.stop_id,
+          stopCode: s.stop_code,
+          name: s.name,
+          lat: s.lat,
+          lon: s.lon,
+          stopSequence: s.stop_sequence,
+          status,
+          distanceMeters: idx >= currentIdx ? Math.round(cumDist) : directDist,
+          etaMinutes,
+        };
+      });
+
+      // Fill stopName if missing from feed
+      const nextStop = orderedStops.find((s) => s.status === "current" || s.status === "next");
+      if (nextStop && !veh.stopName) {
+        veh.stopName = nextStop.name;
+      }
+    }
+  }
+
+  return c.json({
+    agencyId,
+    vehicle: veh,
+    routeShape,
+    stops: orderedStops,
+    serverTime: new Date().toISOString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nearby Stops & Vehicles (powers Simple Rider View + On-Board Auto-Detect)
+// ---------------------------------------------------------------------------
+app.get("/api/v1/nearby", async (c) => {
+  const lat = Number(c.req.query("lat"));
+  const lon = Number(c.req.query("lon"));
+  const radius = Math.min(3000, Math.max(150, Number(c.req.query("radius") || "900")));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return c.json(createProblemDetails(400, "Coordinates required", "Provide valid lat and lon query parameters."), 400);
+  }
+
+  const dLat = radius / 111_000;
+  const dLon = radius / (111_000 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+
+  const [stopRows, agencies] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT s.agency_id, s.stop_id, s.stop_code, s.name, s.lat, s.lon, s.routes_json
+       FROM stops s
+       JOIN feed_versions fv ON fv.id = s.version_id AND fv.status = 'active'
+       WHERE s.lat BETWEEN ? AND ? AND s.lon BETWEEN ? AND ?
+       LIMIT 60`
+    )
+      .bind(lat - dLat, lat + dLat, lon - dLon, lon + dLon)
+      .all<{
+        agency_id: string;
+        stop_id: string;
+        stop_code: string | null;
+        name: string;
+        lat: number;
+        lon: number;
+        routes_json: string;
+      }>(),
+    c.env.DB.prepare("SELECT id FROM agencies WHERE enabled = 1").all<{ id: string }>(),
+  ]);
+
+  const nearbyStops = stopRows.results
+    .map((s) => {
+      const dist = Math.round(haversineMeters(lat, lon, s.lat, s.lon));
+      return {
+        agencyId: s.agency_id,
+        stopId: s.stop_id,
+        stopCode: s.stop_code,
+        name: s.name,
+        lat: s.lat,
+        lon: s.lon,
+        distanceMeters: dist,
+        walkMinutes: Math.max(1, Math.round(dist / 78)),
+        routes: JSON.parse(s.routes_json || "[]") as string[],
+      };
+    })
+    .filter((s) => s.distanceMeters <= radius)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, 12);
+
+  // Gather nearby live vehicles across enabled agencies
+  const vehicleRadius = Math.max(radius, 1200);
+  const vLat = vehicleRadius / 111_000;
+  const vLon = vehicleRadius / (111_000 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+  const bbox: [number, number, number, number] = [lon - vLon, lat - vLat, lon + vLon, lat + vLat];
+
+  const agencyVehicleBatches = await Promise.all(
+    agencies.results.map(async ({ id }) => {
+      const [snap, lookups] = await Promise.all([
+        c.env.AGENCY_LIVE.getByName(id).getSnapshot({ agencyId: id, bbox }),
+        getAgencyStaticLookups(c.env, id),
+      ]);
+      return snap.vehicles.map((v) => {
+        const enriched = enrichVehicleWithLookups(v, lookups);
+        return {
+          ...enriched,
+          distanceMeters: Math.round(haversineMeters(lat, lon, v.lat, v.lon)),
+        };
+      });
+    })
+  );
+
+  const nearbyVehicles = agencyVehicleBatches
+    .flat()
+    .filter((v) => v.distanceMeters <= vehicleRadius)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, 20);
+
+  return c.json({
+    lat,
+    lon,
+    nearbyStops,
+    nearbyVehicles,
+    serverTime: new Date().toISOString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route Finder (Direct & 1-Transfer Transit Routing across Guelph, TTC, GO)
+// ---------------------------------------------------------------------------
+app.get("/api/v1/plan", async (c) => {
+  const fromLat = Number(c.req.query("fromLat"));
+  const fromLon = Number(c.req.query("fromLon"));
+  const toLat = Number(c.req.query("toLat"));
+  const toLon = Number(c.req.query("toLon"));
+  const agencyFilter = c.req.query("agency") || undefined;
+
+  if (
+    !Number.isFinite(fromLat) ||
+    !Number.isFinite(fromLon) ||
+    !Number.isFinite(toLat) ||
+    !Number.isFinite(toLon)
+  ) {
+    return c.json(
+      createProblemDetails(400, "Origin and destination required", "Provide fromLat, fromLon, toLat, toLon."),
+      400
+    );
+  }
+
+  const directDist = haversineMeters(fromLat, fromLon, toLat, toLon);
+  const walkSearchM = 1200;
+  const queryStopsNear = async (lat: number, lon: number) => {
+    const dLat = walkSearchM / 111_000;
+    const dLon = walkSearchM / (111_000 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+    const sql = agencyFilter
+      ? `SELECT s.agency_id, s.stop_id, s.stop_code, s.name, s.lat, s.lon, s.routes_json
+         FROM stops s JOIN feed_versions fv ON fv.id = s.version_id AND fv.status = 'active'
+         WHERE s.agency_id = ? AND s.lat BETWEEN ? AND ? AND s.lon BETWEEN ? AND ? LIMIT 80`
+      : `SELECT s.agency_id, s.stop_id, s.stop_code, s.name, s.lat, s.lon, s.routes_json
+         FROM stops s JOIN feed_versions fv ON fv.id = s.version_id AND fv.status = 'active'
+         WHERE s.lat BETWEEN ? AND ? AND s.lon BETWEEN ? AND ? LIMIT 80`;
+    const binds = agencyFilter
+      ? [agencyFilter, lat - dLat, lat + dLat, lon - dLon, lon + dLon]
+      : [lat - dLat, lat + dLat, lon - dLon, lon + dLon];
+    const res = await c.env.DB.prepare(sql)
+      .bind(...binds)
+      .all<{
+        agency_id: string;
+        stop_id: string;
+        stop_code: string | null;
+        name: string;
+        lat: number;
+        lon: number;
+        routes_json: string;
+      }>();
+
+    return res.results
+      .map((s) => ({
+        agencyId: s.agency_id,
+        stopId: s.stop_id,
+        stopCode: s.stop_code,
+        name: s.name,
+        lat: s.lat,
+        lon: s.lon,
+        distMeters: Math.round(haversineMeters(lat, lon, s.lat, s.lon)),
+        routes: JSON.parse(s.routes_json || "[]") as string[],
+      }))
+      .filter((s) => s.distMeters <= walkSearchM && s.routes.length > 0)
+      .sort((a, b) => a.distMeters - b.distMeters)
+      .slice(0, 28);
+  };
+
+  const [originStops, destStops] = await Promise.all([
+    queryStopsNear(fromLat, fromLon),
+    queryStopsNear(toLat, toLon),
+  ]);
+
+  type PlanOption = {
+    id: string;
+    kind: "direct" | "transfer";
+    agencyId: string;
+    totalMinutes: number;
+    walkMinutes: number;
+    rideMinutes: number;
+    legs: Array<{
+      mode: "walk" | "transit";
+      agencyId?: string;
+      routeId?: string;
+      routeShortName?: string;
+      routeLongName?: string | null;
+      routeColor?: string | null;
+      fromName: string;
+      fromStopId?: string;
+      toName: string;
+      toStopId?: string;
+      distanceMeters: number;
+      minutes: number;
+      activeVehicles?: number;
+      nearestVehicleId?: string | null;
+      nearestFleetNumber?: string | null;
+      nearestHeadsign?: string | null;
+    }>;
+  };
+
+  const options: PlanOption[] = [];
+  const seenDirectRoutes = new Set<string>();
+
+  // Preload lookups & live stats for agencies involved
+  const involvedAgencies = Array.from(
+    new Set([...originStops.map((s) => s.agencyId), ...destStops.map((s) => s.agencyId)])
+  );
+  const agencyInfo = new Map<
+    string,
+    { lookups: AgencyStaticLookups; vehicles: Awaited<ReturnType<AgencyLiveDO["getSnapshot"]>>["vehicles"] }
+  >();
+  await Promise.all(
+    involvedAgencies.map(async (ag) => {
+      const [lookups, snap] = await Promise.all([
+        getAgencyStaticLookups(c.env, ag),
+        c.env.AGENCY_LIVE.getByName(ag).getSnapshot({ agencyId: ag }),
+      ]);
+      agencyInfo.set(ag, { lookups, vehicles: snap.vehicles });
+    })
+  );
+
+  // 1. Direct routes connecting an origin stop to a destination stop in the same agency
+  for (const oStop of originStops) {
+    for (const dStop of destStops) {
+      if (oStop.agencyId !== dStop.agencyId || oStop.stopId === dStop.stopId) continue;
+      const destRouteSet = new Set(dStop.routes);
+      for (const routeId of oStop.routes) {
+        if (!destRouteSet.has(routeId)) continue;
+        const key = `${oStop.agencyId}:${routeId}`;
+        if (seenDirectRoutes.has(key)) continue;
+        seenDirectRoutes.add(key);
+
+        const info = agencyInfo.get(oStop.agencyId);
+        const rm = info?.lookups.routes.get(routeId);
+        const routeVehicles = (info?.vehicles ?? [])
+          .filter((v) => v.routeId === routeId)
+          .map((v) => ({
+            v: enrichVehicleWithLookups(v, info!.lookups),
+            dist: haversineMeters(v.lat, v.lon, oStop.lat, oStop.lon),
+          }))
+          .sort((a, b) => a.dist - b.dist);
+
+        const rideDist = Math.round(haversineMeters(oStop.lat, oStop.lon, dStop.lat, dStop.lon) * 1.25);
+        const speedMps = oStop.agencyId === "go" ? 16 : 6.2;
+        const rideMinutes = Math.max(2, Math.round(rideDist / speedMps / 60));
+        const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
+        const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
+        const walkMinutes = walkStartMin + walkEndMin;
+
+        options.push({
+          id: `direct-${oStop.agencyId}-${routeId}`,
+          kind: "direct",
+          agencyId: oStop.agencyId,
+          totalMinutes: walkMinutes + rideMinutes + 4,
+          walkMinutes,
+          rideMinutes,
+          legs: [
+            {
+              mode: "walk",
+              fromName: "Origin",
+              toName: oStop.name,
+              toStopId: oStop.stopId,
+              distanceMeters: oStop.distMeters,
+              minutes: walkStartMin,
+            },
+            {
+              mode: "transit",
+              agencyId: oStop.agencyId,
+              routeId,
+              routeShortName: rm?.shortName ?? routeId,
+              routeLongName: rm?.longName ?? null,
+              routeColor: rm?.color ?? null,
+              fromName: oStop.name,
+              fromStopId: oStop.stopId,
+              toName: dStop.name,
+              toStopId: dStop.stopId,
+              distanceMeters: rideDist,
+              minutes: rideMinutes,
+              activeVehicles: routeVehicles.length,
+              nearestVehicleId: routeVehicles[0]?.v.vehicleId ?? null,
+              nearestFleetNumber: routeVehicles[0]?.v.fleetNumber ?? null,
+              nearestHeadsign: routeVehicles[0]?.v.headsign ?? null,
+            },
+            {
+              mode: "walk",
+              fromName: dStop.name,
+              fromStopId: dStop.stopId,
+              toName: "Destination",
+              distanceMeters: dStop.distMeters,
+              minutes: walkEndMin,
+            },
+          ],
+        });
+      }
+    }
+  }
+
+  // 2. If fewer than 3 direct routes, search 1-transfer connections via shared hub stops along the midpoint
+  if (options.length < 3 && originStops.length > 0 && destStops.length > 0) {
+    const midLat = (fromLat + toLat) / 2;
+    const midLon = (fromLon + toLon) / 2;
+    const spanDeg = Math.max(0.025, Math.min(0.18, directDist / 111_000 / 1.8));
+
+    const hubRows = await c.env.DB.prepare(
+      `SELECT s.agency_id, s.stop_id, s.name, s.lat, s.lon, s.routes_json
+       FROM stops s JOIN feed_versions fv ON fv.id = s.version_id AND fv.status = 'active'
+       WHERE s.lat BETWEEN ? AND ? AND s.lon BETWEEN ? AND ? AND LENGTH(s.routes_json) > 10
+       LIMIT 160`
+    )
+      .bind(midLat - spanDeg, midLat + spanDeg, midLon - spanDeg, midLon + spanDeg)
+      .all<{
+        agency_id: string;
+        stop_id: string;
+        name: string;
+        lat: number;
+        lon: number;
+        routes_json: string;
+      }>();
+
+    const originByRoute = new Map<string, (typeof originStops)[number]>();
+    for (const os of originStops) {
+      for (const r of os.routes) {
+        const k = `${os.agencyId}:${r}`;
+        if (!originByRoute.has(k)) originByRoute.set(k, os);
+      }
+    }
+    const destByRoute = new Map<string, (typeof destStops)[number]>();
+    for (const ds of destStops) {
+      for (const r of ds.routes) {
+        const k = `${ds.agencyId}:${r}`;
+        if (!destByRoute.has(k)) destByRoute.set(k, ds);
+      }
+    }
+
+    const seenTransfers = new Set<string>();
+    for (const hub of hubRows.results) {
+      const hubRoutes = JSON.parse(hub.routes_json || "[]") as string[];
+      const matchingOrigin = hubRoutes.find((r) => originByRoute.has(`${hub.agency_id}:${r}`));
+      const matchingDest = hubRoutes.find(
+        (r) => r !== matchingOrigin && destByRoute.has(`${hub.agency_id}:${r}`)
+      );
+      if (!matchingOrigin || !matchingDest) continue;
+
+      const tKey = `${hub.agency_id}:${matchingOrigin}>${matchingDest}`;
+      if (seenTransfers.has(tKey)) continue;
+      seenTransfers.add(tKey);
+
+      const oStop = originByRoute.get(`${hub.agency_id}:${matchingOrigin}`)!;
+      const dStop = destByRoute.get(`${hub.agency_id}:${matchingDest}`)!;
+      const info = agencyInfo.get(hub.agency_id);
+      const rm1 = info?.lookups.routes.get(matchingOrigin);
+      const rm2 = info?.lookups.routes.get(matchingDest);
+
+      const leg1Dist = Math.round(haversineMeters(oStop.lat, oStop.lon, hub.lat, hub.lon) * 1.25);
+      const leg2Dist = Math.round(haversineMeters(hub.lat, hub.lon, dStop.lat, dStop.lon) * 1.25);
+      const speedMps = hub.agency_id === "go" ? 16 : 6.2;
+      const leg1Min = Math.max(2, Math.round(leg1Dist / speedMps / 60));
+      const leg2Min = Math.max(2, Math.round(leg2Dist / speedMps / 60));
+      const walkStartMin = Math.max(1, Math.round(oStop.distMeters / 78));
+      const walkEndMin = Math.max(1, Math.round(dStop.distMeters / 78));
+      const walkMinutes = walkStartMin + walkEndMin;
+
+      options.push({
+        id: `transfer-${hub.agency_id}-${matchingOrigin}-${matchingDest}`,
+        kind: "transfer",
+        agencyId: hub.agency_id,
+        totalMinutes: walkMinutes + leg1Min + leg2Min + 9,
+        walkMinutes,
+        rideMinutes: leg1Min + leg2Min,
+        legs: [
+          {
+            mode: "walk",
+            fromName: "Origin",
+            toName: oStop.name,
+            toStopId: oStop.stopId,
+            distanceMeters: oStop.distMeters,
+            minutes: walkStartMin,
+          },
+          {
+            mode: "transit",
+            agencyId: hub.agency_id,
+            routeId: matchingOrigin,
+            routeShortName: rm1?.shortName ?? matchingOrigin,
+            routeLongName: rm1?.longName ?? null,
+            routeColor: rm1?.color ?? null,
+            fromName: oStop.name,
+            fromStopId: oStop.stopId,
+            toName: hub.name,
+            toStopId: hub.stop_id,
+            distanceMeters: leg1Dist,
+            minutes: leg1Min,
+            activeVehicles: (info?.vehicles ?? []).filter((v) => v.routeId === matchingOrigin).length,
+          },
+          {
+            mode: "transit",
+            agencyId: hub.agency_id,
+            routeId: matchingDest,
+            routeShortName: rm2?.shortName ?? matchingDest,
+            routeLongName: rm2?.longName ?? null,
+            routeColor: rm2?.color ?? null,
+            fromName: hub.name,
+            fromStopId: hub.stop_id,
+            toName: dStop.name,
+            toStopId: dStop.stopId,
+            distanceMeters: leg2Dist,
+            minutes: leg2Min,
+            activeVehicles: (info?.vehicles ?? []).filter((v) => v.routeId === matchingDest).length,
+          },
+          {
+            mode: "walk",
+            fromName: dStop.name,
+            fromStopId: dStop.stopId,
+            toName: "Destination",
+            distanceMeters: dStop.distMeters,
+            minutes: walkEndMin,
+          },
+        ],
+      });
+      if (options.length >= 8) break;
+    }
+  }
+
+  options.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "direct" ? -1 : 1;
+    return a.totalMinutes - b.totalMinutes;
+  });
+
+  return c.json({
+    from: { lat: fromLat, lon: fromLon },
+    to: { lat: toLat, lon: toLon },
+    directDistanceMeters: Math.round(directDist),
+    options: options.slice(0, 6),
+    originStopsChecked: originStops.length,
+    destStopsChecked: destStops.length,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ontario Place & Stop Geocoder (D1 GTFS Stops + OpenStreetMap Nominatim)
+// ---------------------------------------------------------------------------
+app.get("/api/v1/geocode", async (c) => {
+  const q = c.req.query("q")?.trim() || "";
+  if (q.length < 2) return c.json({ results: [] });
+
+  const like = `%${q}%`;
+  const stopMatches = await c.env.DB.prepare(
+    `SELECT s.agency_id, s.stop_id, s.stop_code, s.name, s.lat, s.lon
+     FROM stops s JOIN feed_versions fv ON fv.id = s.version_id AND fv.status = 'active'
+     WHERE s.name LIKE ? OR s.stop_code LIKE ?
+     LIMIT 6`
+  )
+    .bind(like, like)
+    .all<{ agency_id: string; stop_id: string; stop_code: string | null; name: string; lat: number; lon: number }>();
+
+  const results: Array<{
+    id: string;
+    label: string;
+    subtitle: string;
+    lat: number;
+    lon: number;
+    kind: "stop" | "place";
+  }> = stopMatches.results.map((s) => ({
+    id: `stop:${s.agency_id}:${s.stop_id}`,
+    label: s.name,
+    subtitle: `${s.agency_id.toUpperCase()} Stop${s.stop_code ? ` #${s.stop_code}` : ""}`,
+    lat: s.lat,
+    lon: s.lon,
+    kind: "stop",
+  }));
+
+  // Complement with OpenStreetMap Nominatim scoped to Southern Ontario
+  try {
+    const nomUrl = new URL("https://nominatim.openstreetmap.org/search");
+    nomUrl.searchParams.set("q", `${q}, Ontario, Canada`);
+    nomUrl.searchParams.set("format", "jsonv2");
+    nomUrl.searchParams.set("limit", "5");
+    nomUrl.searchParams.set("viewbox", "-81.5,44.6,-78.2,42.8");
+    nomUrl.searchParams.set("bounded", "1");
+
+    const resp = await fetch(nomUrl.toString(), {
+      headers: { "User-Agent": "Swisshost/1.0 (+https://swisshost.cc; public transit finder)" },
+    });
+    if (resp.ok) {
+      const places = (await resp.json()) as Array<{
+        place_id: number;
+        display_name: string;
+        lat: string;
+        lon: string;
+        type: string;
+      }>;
+      for (const p of places) {
+        const parts = p.display_name.split(",").map((x) => x.trim());
+        results.push({
+          id: `place:${p.place_id}`,
+          label: parts.slice(0, 2).join(", "),
+          subtitle: parts.slice(2, 4).join(", ") || "Ontario",
+          lat: Number(p.lat),
+          lon: Number(p.lon),
+          kind: "place",
+        });
+      }
+    }
+  } catch {
+    // Graceful fallback to GTFS stops only
+  }
+
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({ results: results.slice(0, 10) });
 });
 
 // Historical tracking & replay (F08)
@@ -735,31 +1381,94 @@ async function getActiveVersionId(db: D1Database, agencyId: string): Promise<str
   return v?.id ?? null;
 }
 
-async function getRouteLookup(
-  env: Env,
-  agencyId: string
-): Promise<Map<string, { shortName: string; longName: string; color: string | null }>> {
-  const cacheKey = `routes:${agencyId}`;
-  const cached = await env.CACHE.get(cacheKey, "json").catch(() => null);
-  if (Array.isArray(cached)) {
-    return new Map(
-      (cached as Array<{ route_id: string; short_name: string; long_name: string; color: string | null }>).map((r) => [
+interface TripLookupBlob {
+  h: string[];
+  p: string[];
+  m: Record<string, [number, number, number]>;
+}
+
+interface AgencyStaticLookups {
+  routes: Map<string, { shortName: string; longName: string; color: string | null }>;
+  stops: Record<string, string>;
+  trips: TripLookupBlob | null;
+}
+
+const lookupCache = new Map<string, { expiresAt: number; data: AgencyStaticLookups }>();
+
+async function getAgencyStaticLookups(env: Env, agencyId: string): Promise<AgencyStaticLookups> {
+  const now = Date.now();
+  const hit = lookupCache.get(agencyId);
+  if (hit && hit.expiresAt > now) return hit.data;
+
+  const [routesRaw, stopsRaw, tripsRaw] = await Promise.all([
+    env.CACHE.get(`routes:${agencyId}`, "json").catch(() => null),
+    env.CACHE.get(`stop_lookup:${agencyId}`, "json").catch(() => null),
+    env.CACHE.get(`trip_lookup:${agencyId}`, "json").catch(() => null),
+  ]);
+
+  let routes = new Map<string, { shortName: string; longName: string; color: string | null }>();
+  if (Array.isArray(routesRaw)) {
+    routes = new Map(
+      (routesRaw as Array<{ route_id: string; short_name: string; long_name: string; color: string | null }>).map((r) => [
         r.route_id,
         { shortName: r.short_name, longName: r.long_name, color: r.color },
       ])
     );
+  } else {
+    const versionId = await getActiveVersionId(env.DB, agencyId);
+    if (versionId) {
+      const rows = await env.DB.prepare(
+        "SELECT route_id, short_name, long_name, color FROM routes WHERE agency_id = ? AND version_id = ?"
+      )
+        .bind(agencyId, versionId)
+        .all<{ route_id: string; short_name: string; long_name: string; color: string | null }>();
+      routes = new Map(
+        rows.results.map((r) => [r.route_id, { shortName: r.short_name, longName: r.long_name, color: r.color }])
+      );
+      await env.CACHE.put(`routes:${agencyId}`, JSON.stringify(rows.results), { expirationTtl: 600 }).catch(() => undefined);
+    }
   }
-  const versionId = await getActiveVersionId(env.DB, agencyId);
-  if (!versionId) return new Map();
-  const rows = await env.DB.prepare(
-    "SELECT route_id, short_name, long_name, color FROM routes WHERE agency_id = ? AND version_id = ?"
-  )
-    .bind(agencyId, versionId)
-    .all<{ route_id: string; short_name: string; long_name: string; color: string | null }>();
-  await env.CACHE.put(cacheKey, JSON.stringify(rows.results), { expirationTtl: 600 }).catch(() => undefined);
-  return new Map(
-    rows.results.map((r) => [r.route_id, { shortName: r.short_name, longName: r.long_name, color: r.color }])
-  );
+
+  const data: AgencyStaticLookups = {
+    routes,
+    stops: (stopsRaw && typeof stopsRaw === "object" ? (stopsRaw as Record<string, string>) : {}),
+    trips: (tripsRaw && typeof tripsRaw === "object" ? (tripsRaw as TripLookupBlob) : null),
+  };
+  lookupCache.set(agencyId, { expiresAt: now + 300_000, data });
+  return data;
+}
+
+function enrichVehicleWithLookups<
+  T extends {
+    routeId: string | null;
+    tripId: string | null;
+    stopId: string | null;
+    directionId: number | null;
+    routeShortName?: string | null;
+    routeLongName?: string | null;
+    routeColor?: string | null;
+    headsign?: string | null;
+    stopName?: string | null;
+    patternTripId?: string | null;
+  },
+>(v: T, lookups: AgencyStaticLookups): T {
+  const rm = v.routeId ? lookups.routes.get(v.routeId) : undefined;
+  const tm = v.tripId && lookups.trips?.m ? lookups.trips.m[v.tripId] : undefined;
+  const headsign = tm ? lookups.trips!.h[tm[0]] || null : v.headsign ?? null;
+  const directionId = tm ? tm[1] : v.directionId;
+  const patternTripId = tm ? lookups.trips!.p[tm[2]] || null : null;
+  const stopName = v.stopId ? lookups.stops[v.stopId] || null : null;
+
+  return {
+    ...v,
+    directionId,
+    routeShortName: rm?.shortName ?? v.routeId,
+    routeLongName: rm?.longName ?? null,
+    routeColor: rm?.color ?? null,
+    headsign,
+    patternTripId,
+    stopName,
+  };
 }
 
 app.get("/api/v1/agencies/:id/routes", async (c) => {
@@ -1142,17 +1851,23 @@ app.get("/api/v1/agencies/:id/stops/:stop/history", async (c) => {
 app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
   const agencyId = c.req.param("id");
   const tripId = decodeURIComponent(c.req.param("instance"));
-  const versionId = await getActiveVersionId(c.env.DB, agencyId);
-  const agency = await c.env.DB.prepare("SELECT timezone FROM agencies WHERE id = ?")
-    .bind(agencyId)
-    .first<{ timezone: string }>();
+  const [versionId, lookups, agency] = await Promise.all([
+    getActiveVersionId(c.env.DB, agencyId),
+    getAgencyStaticLookups(c.env, agencyId),
+    c.env.DB.prepare("SELECT timezone FROM agencies WHERE id = ?").bind(agencyId).first<{ timezone: string }>(),
+  ]);
   const serviceDate = c.req.query("date") || getLocalServiceContext(new Date(), agency?.timezone ?? "America/Toronto").serviceDate;
+
+  // Resolve exact tripId OR its canonical patternTripId from KV trip_lookup so every live GTFS-RT trip gets full stop_times!
+  const tm = lookups.trips?.m ? lookups.trips.m[tripId] : undefined;
+  const lookupTripId = tm ? lookups.trips!.p[tm[2]] || tripId : tripId;
+  const resolvedHeadsign = tm ? lookups.trips!.h[tm[0]] || null : null;
 
   const liveStub = c.env.AGENCY_LIVE.getByName(agencyId);
   const [tripRow, stopTimes, liveTripUpdates, assignments, liveVeh] = await Promise.all([
     versionId
       ? c.env.DB.prepare("SELECT * FROM trips WHERE agency_id = ? AND version_id = ? AND trip_id = ?")
-          .bind(agencyId, versionId, tripId)
+          .bind(agencyId, versionId, lookupTripId)
           .first<Record<string, unknown>>()
       : Promise.resolve(null),
     versionId
@@ -1163,7 +1878,7 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
            WHERE st.agency_id = ? AND st.version_id = ? AND st.trip_id = ?
            ORDER BY st.stop_sequence ASC`
         )
-          .bind(agencyId, versionId, tripId)
+          .bind(agencyId, versionId, lookupTripId)
           .all()
       : Promise.resolve({ results: [] }),
     liveStub.getTripUpdates({ tripId }),
@@ -1174,6 +1889,12 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
       .all(),
     liveStub.getVehicleByTrip(tripId),
   ]);
+
+  const enrichedTrip = tripRow
+    ? { ...tripRow, headsign: resolvedHeadsign ?? tripRow.headsign }
+    : resolvedHeadsign
+      ? { trip_id: tripId, headsign: resolvedHeadsign }
+      : null;
 
   const tu = liveTripUpdates[0] ?? null;
   const liveVehicle = liveVeh
@@ -1190,7 +1911,7 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
     serviceDate,
     tripId,
     staticVersionId: versionId,
-    trip: tripRow,
+    trip: enrichedTrip,
     stopTimes: stopTimes.results,
     tripUpdate: tu
       ? {

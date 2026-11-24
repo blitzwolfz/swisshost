@@ -32,8 +32,11 @@ export interface LiveVehicle {
   label: string | null;
   routeId: string | null;
   routeShortName?: string | null;
+  routeLongName?: string | null;
   routeColor?: string | null;
   tripId: string | null;
+  patternTripId?: string | null;
+  headsign?: string | null;
   blockId: string | null;
   directionId: number | null;
   lat: number;
@@ -43,6 +46,7 @@ export interface LiveVehicle {
   scheduleDeviationSec: number | null;
   currentStatus: string | null;
   stopId: string | null;
+  stopName?: string | null;
   stopSequence: number | null;
   occupancyStatus: string | null;
   observedAt: string | null;
@@ -98,4 +102,20 @@ export function formatRelativeAge(iso: string | null | undefined): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
   return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
+export function formatCompass(bearingDeg: number | null | undefined): string {
+  if (bearingDeg === null || bearingDeg === undefined || !Number.isFinite(bearingDeg)) return "";
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const idx = Math.round((((bearingDeg % 360) + 360) % 360) / 45) % 8;
+  return dirs[idx] ?? "";
+}
+
+export function formatVehicleStatusLine(v: Pick<LiveVehicle, "currentStatus" | "stopName" | "stopId">): string {
+  const stopLabel = v.stopName || (v.stopId ? `Stop ${v.stopId}` : null);
+  const raw = v.currentStatus || "IN_TRANSIT_TO";
+  if (raw === "STOPPED_AT") return stopLabel ? `Stopped at ${stopLabel}` : "Stopped at stop";
+  if (raw === "INCOMING_AT") return stopLabel ? `Arriving at ${stopLabel}` : "Approaching stop";
+  if (raw === "IN_TRANSIT_TO") return stopLabel ? `Next: ${stopLabel}` : "In transit";
+  return stopLabel ? `${raw.replace(/_/g, " ")} ${stopLabel}` : raw.replace(/_/g, " ");
 }

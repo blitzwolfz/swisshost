@@ -3,7 +3,14 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, History as HistoryIcon, Star } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
-import { apiJson, formatDelay, formatRelativeAge, formatSpeed, type LiveVehicle } from "../lib/api";
+import {
+  apiJson,
+  formatCompass,
+  formatDelay,
+  formatRelativeAge,
+  formatSpeed,
+  type LiveVehicle,
+} from "../lib/api";
 import { usePreferences } from "../lib/preferences";
 
 interface FleetRow {
@@ -332,11 +339,29 @@ export function VehicleDetailPage() {
                   <th className="w-52">Current Route</th>
                   <td>
                     {l?.route_id ? (
-                      <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} className="font-semibold">
-                        Route {String(l.route_id)}
-                      </Link>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} className="font-semibold">
+                          Route {String(l.route_short_name ?? l.route_id)}
+                          {l.route_long_name ? ` — ${String(l.route_long_name)}` : ""}
+                        </Link>
+                        {l.headsign ? <span className="sh-pill sh-pill-muted">To {String(l.headsign)}</span> : null}
+                      </div>
                     ) : (
                       "Unassigned"
+                    )}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Current / Next Stop</th>
+                  <td>
+                    {l?.stop_name ? (
+                      <Link to={`/stops/${agencyId}/${encodeURIComponent(String(l.stop_id ?? ""))}`} className="font-semibold">
+                        {String(l.current_status ?? "IN_TRANSIT_TO").replace(/_/g, " ")}: {String(l.stop_name)}
+                      </Link>
+                    ) : l?.current_status ? (
+                      <span className="capitalize">{String(l.current_status).replace(/_/g, " ").toLowerCase()}</span>
+                    ) : (
+                      "Unknown"
                     )}
                   </td>
                 </tr>
@@ -365,7 +390,9 @@ export function VehicleDetailPage() {
                   <td className="tabular-nums">
                     {l
                       ? `${Number(l.lat).toFixed(5)}, ${Number(l.lon).toFixed(5)} · ${
-                          l.bearing_deg !== null ? `${Math.round(Number(l.bearing_deg))}°` : "Unknown heading"
+                          l.bearing_deg !== null
+                            ? `${Math.round(Number(l.bearing_deg))}° ${formatCompass(Number(l.bearing_deg))}`
+                            : "Unknown heading"
                         } · ${formatSpeed(l.speed_mps !== null ? Number(l.speed_mps) : null, units)}`
                       : "No recent GPS"}
                   </td>

@@ -12,6 +12,7 @@ interface TransitMapProps {
   routeShape?: { type: "LineString"; coordinates: Array<[number, number]> } | null;
   replayTrail?: Array<[number, number]> | null;
   stops?: Array<{ stop_id: string; name: string; lat: number; lon: number }>;
+  userLocation?: { lat: number; lon: number } | null;
   followSelected?: boolean;
   heightClass?: string;
   rounded?: boolean;
@@ -88,6 +89,7 @@ export function TransitMap({
   routeShape,
   replayTrail,
   stops,
+  userLocation = null,
   followSelected = false,
   heightClass = "h-[65vh] min-h-[420px]",
   rounded = true,
@@ -224,6 +226,31 @@ export function TransitMap({
             "circle-color": "#FFFFFF",
             "circle-stroke-color": "#000000",
             "circle-stroke-width": 1.6,
+          },
+        });
+      }
+
+      if (!map.getSource("user-location")) {
+        map.addSource("user-location", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({
+          id: "user-location-ring",
+          type: "circle",
+          source: "user-location",
+          paint: {
+            "circle-radius": 18,
+            "circle-color": "#2563EB",
+            "circle-opacity": 0.22,
+          },
+        });
+        map.addLayer({
+          id: "user-location-dot",
+          type: "circle",
+          source: "user-location",
+          paint: {
+            "circle-radius": 7,
+            "circle-color": "#2563EB",
+            "circle-stroke-color": "#FFFFFF",
+            "circle-stroke-width": 2.5,
           },
         });
       }
@@ -400,6 +427,21 @@ export function TransitMap({
       })),
     });
   }, [stops]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const src = map.getSource("user-location") as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData(
+      userLocation
+        ? {
+            type: "FeatureCollection",
+            features: [{ type: "Feature", geometry: { type: "Point", coordinates: [userLocation.lon, userLocation.lat] }, properties: {} }],
+          }
+        : { type: "FeatureCollection", features: [] }
+    );
+  }, [userLocation]);
 
   return (
     <div

@@ -322,6 +322,14 @@ export function Layout() {
             </button>
 
             <Link
+              to="/simple"
+              className={`sh-btn no-underline px-2.5 text-xs ${location.pathname === "/simple" ? "sh-highlight" : ""}`}
+              title="Simplified Rider View"
+            >
+              Simple
+            </Link>
+
+            <Link
               to="/favorites"
               className="sh-btn no-underline px-3"
               aria-label={`Favourites (${favorites.length})`}
@@ -410,6 +418,8 @@ export function Layout() {
                   </label>
 
                   <nav aria-label="More" className="grid grid-cols-2 border-t pt-3 gap-y-2" style={{ borderColor: "var(--ink)" }}>
+                    <Link to="/simple">Simple rider view</Link>
+                    <Link to="/plan">Find a route</Link>
                     <Link to="/alerts">Service alerts</Link>
                     <Link to="/status">Feed status</Link>
                     <Link to="/install">Save as app</Link>
@@ -466,6 +476,8 @@ export function Layout() {
               )}
             </div>
             <nav aria-label="Footer" className="col-span-12 md:col-span-6 flex flex-wrap gap-x-6 gap-y-2 md:justify-end">
+              <Link to="/simple">Simple view</Link>
+              <Link to="/plan">Find a route</Link>
               <Link to="/alerts">Alerts</Link>
               <Link to="/status">Feed status</Link>
               <Link to="/install">Save as app</Link>

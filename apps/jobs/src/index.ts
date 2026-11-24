@@ -462,8 +462,10 @@ export async function importStaticGtfsForAgency(
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = new Uint8Array(await resp.arrayBuffer());
-        if (buf.byteLength > 25 * 1024 * 1024) {
-          throw new Error(`Static ZIP too large for Worker isolate (${buf.byteLength} bytes); use infra/seed-static.ts CLI`);
+        if (buf.byteLength > 4 * 1024 * 1024) {
+          throw new Error(
+            `Static GTFS ZIP is ${(buf.byteLength / 1024 / 1024).toFixed(1)} MB, which exceeds Workers Free 10ms CPU limit. Run "npx tsx infra/seed-static.ts ${agencyId}" or trigger the daily Sync Static GTFS GitHub Action.`
+          );
         }
         loaded = buf;
         break;

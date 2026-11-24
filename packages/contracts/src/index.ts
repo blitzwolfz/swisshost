@@ -187,8 +187,10 @@ export interface LiveVehicleState {
   label: string | null;
   routeId: string | null;
   routeShortName?: string | null;
+  routeLongName?: string | null;
   routeColor?: string | null;
   tripId: string | null;
+  patternTripId?: string | null;
   headsign?: string | null;
   blockId: string | null;
   directionId: number | null;
@@ -199,6 +201,7 @@ export interface LiveVehicleState {
   scheduleDeviationSec: number | null;
   currentStatus: string | null;
   stopId: string | null;
+  stopName?: string | null;
   stopSequence: number | null;
   occupancyStatus: string | null;
   observedAt: string | null;
