@@ -265,6 +265,8 @@ app.get("/api/v1/live", async (c) => {
   return stub.fetch(c.req.raw);
 });
 
+const coldStartPollGuard = new Map<string, number>();
+
 app.get("/api/v1/agencies/:id/vehicles", async (c) => {
   const agencyId = c.req.param("id");
   const routeId = c.req.query("route") || undefined;
@@ -282,7 +284,46 @@ app.get("/api/v1/agencies/:id/vehicles", async (c) => {
     }
   }
 
-  const snap = await c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId, routeId, bbox });
+  let snap = await c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId, routeId, bbox });
+
+  // Self-heal immediately after a deploy or DO eviction (or when stale > 120s), throttled per agency to once every 45s
+  const lastTry = coldStartPollGuard.get(agencyId) ?? 0;
+  const isStaleOrEmpty =
+    snap.vehicles.length === 0 ||
+    (snap.lastSuccessAt !== null && Date.now() - Date.parse(snap.lastSuccessAt) > 120_000);
+  if (isStaleOrEmpty && Date.now() - lastTry > 45_000) {
+    coldStartPollGuard.set(agencyId, Date.now());
+    const feed = await c.env.DB.prepare(
+      `SELECT f.*, a.timezone, a.archive_policy
+       FROM feeds f JOIN agencies a ON a.id = f.agency_id
+       WHERE f.agency_id = ? AND f.kind = 'vehicle_positions' AND f.enabled = 1 AND f.status != 'missing_key'
+       LIMIT 1`
+    )
+      .bind(agencyId)
+      .first<Record<string, unknown>>();
+    if (feed) {
+      const scheduler = c.env.FEED_SCHEDULER.getByName(String(feed.id));
+      await scheduler
+        .ensureScheduled({
+          id: String(feed.id),
+          agencyId: String(feed.agency_id),
+          kind: "vehicle_positions",
+          adapter: String(feed.adapter),
+          url: String(feed.url),
+          fallbackUrl: (feed.fallback_url as string | null) ?? null,
+          authQueryParam: (feed.auth_query_param as string | null) ?? null,
+          authSecretRef: (feed.auth_secret_ref as string | null) ?? null,
+          refreshSeconds: Number(feed.refresh_seconds || 45),
+          staleAfterSeconds: Number(feed.stale_after_seconds || 120),
+          timezone: String(feed.timezone || "America/Toronto"),
+          archivePermitted: String(feed.archive_policy || "permitted") === "permitted",
+          enabled: true,
+        })
+        .catch(() => undefined);
+      await scheduler.pollNow(false).catch(() => undefined);
+      snap = await c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId, routeId, bbox });
+    }
+  }
 
   // Fall back to D1 vehicle_latest if DO cold-started with 0 rows
   let vehicles = snap.vehicles;

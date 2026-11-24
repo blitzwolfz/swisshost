@@ -33,43 +33,40 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   private nextDueMs = 0;
   private lastD1StatusSyncMs = 0;
   private lastSyncedStatus = "";
+  private dlqBatches: Array<{ id: string; receivedAt: string; error: string }> = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Read-only hydration from any previously persisted config (0 SQLite writes on wake)
     ctx.blockConcurrencyWhile(async () => {
+      try {
+        const rows = this.ctx.storage.sql
+          .exec<{ key: string; value: string }>("SELECT key, value FROM scheduler_state WHERE key = 'config'")
+          .toArray();
+        if (rows[0]) {
+          this.config = JSON.parse(rows[0].value) as SchedulerFeedConfig;
+        }
+      } catch {
+        // Table not yet initialized or cold DO; config will be supplied by ensureScheduled / watchdog cron
+      }
+    });
+  }
+
+  private persistConfigBestEffort(cfg: SchedulerFeedConfig): void {
+    try {
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS scheduler_state (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS dlq_batches (
-          id TEXT PRIMARY KEY,
-          received_at TEXT NOT NULL,
-          error TEXT NOT NULL,
-          attempts INTEGER NOT NULL DEFAULT 1,
-          payload_base64 TEXT NOT NULL
-        );
       `);
-      const rows = this.ctx.storage.sql
-        .exec<{ key: string; value: string }>("SELECT key, value FROM scheduler_state")
-        .toArray();
-      for (const r of rows) {
-        if (r.key === "config") this.config = JSON.parse(r.value) as SchedulerFeedConfig;
-        if (r.key === "pollGeneration") this.pollGeneration = Number(r.value) || 0;
-        if (r.key === "consecutiveErrors") this.consecutiveErrors = Number(r.value) || 0;
-        if (r.key === "lastEtag") this.lastEtag = r.value || null;
-        if (r.key === "lastModified") this.lastModified = r.value || null;
-        if (r.key === "nextDueMs") this.nextDueMs = Number(r.value) || 0;
-      }
-    });
-  }
-
-  private putState(key: string, value: string): void {
-    this.ctx.storage.sql.exec(
-      "INSERT INTO scheduler_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      key,
-      value
-    );
+      this.ctx.storage.sql.exec(
+        "INSERT INTO scheduler_state (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        JSON.stringify(cfg)
+      );
+    } catch {
+      // Non-fatal: config stays in DO memory and is refreshed by the */15 watchdog cron
+    }
   }
 
   private deterministicJitterMs(feedId: string): number {
@@ -81,23 +78,32 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   }
 
   async ensureScheduled(cfg: SchedulerFeedConfig): Promise<{ scheduled: boolean; nextDueMs: number }> {
+    const changed = !this.config || JSON.stringify(this.config) !== JSON.stringify(cfg);
     this.config = cfg;
-    this.putState("config", JSON.stringify(cfg));
+    if (changed) {
+      this.persistConfigBestEffort(cfg);
+    }
 
     if (!cfg.enabled || cfg.kind === "gtfs_static") {
-      await this.ctx.storage.deleteAlarm();
+      try {
+        await this.ctx.storage.deleteAlarm();
+      } catch {
+        // ignore
+      }
       this.nextDueMs = 0;
-      this.putState("nextDueMs", "0");
       return { scheduled: false, nextDueMs: 0 };
     }
 
-    const existingAlarm = await this.ctx.storage.getAlarm();
+    const existingAlarm = await this.ctx.storage.getAlarm().catch(() => null);
     const now = Date.now();
     if (!existingAlarm || existingAlarm < now - 30_000) {
       const next = now + 2000 + this.deterministicJitterMs(cfg.id);
-      await this.ctx.storage.setAlarm(next);
       this.nextDueMs = next;
-      this.putState("nextDueMs", String(next));
+      try {
+        await this.ctx.storage.setAlarm(next);
+      } catch {
+        // ignore if alarm storage is temporarily throttled
+      }
       return { scheduled: true, nextDueMs: next };
     }
 
@@ -113,9 +119,6 @@ export class FeedSchedulerDO extends DurableObject<Env> {
     lastAlarmLatenessMs: number;
     dlqCount: number;
   }> {
-    const dlqRow = this.ctx.storage.sql
-      .exec<{ c: number }>("SELECT COUNT(*) as c FROM dlq_batches")
-      .one();
     return {
       feedId: this.config?.id ?? null,
       enabled: this.config?.enabled ?? false,
@@ -123,7 +126,7 @@ export class FeedSchedulerDO extends DurableObject<Env> {
       consecutiveErrors: this.consecutiveErrors,
       nextDueMs: this.nextDueMs,
       lastAlarmLatenessMs: this.lastAlarmLatenessMs,
-      dlqCount: dlqRow?.c ?? 0,
+      dlqCount: this.dlqBatches.length,
     };
   }
 
@@ -221,7 +224,6 @@ export class FeedSchedulerDO extends DurableObject<Env> {
 
       if (resp.status === 304) {
         this.consecutiveErrors = 0;
-        this.putState("consecutiveErrors", "0");
         await this.updateFeedRow(cfg.id, { status: "fresh", lastFetchAt: nowIso, lastSuccessAt: nowIso, lastError: null });
         return { ok: true, status: "not_modified", entities: 0, latencyMs: Date.now() - startMs };
       }
@@ -242,14 +244,8 @@ export class FeedSchedulerDO extends DurableObject<Env> {
 
       const etag = resp.headers.get("etag");
       const lastMod = resp.headers.get("last-modified");
-      if (etag) {
-        this.lastEtag = etag;
-        this.putState("lastEtag", etag);
-      }
-      if (lastMod) {
-        this.lastModified = lastMod;
-        this.putState("lastModified", lastMod);
-      }
+      if (etag) this.lastEtag = etag;
+      if (lastMod) this.lastModified = lastMod;
 
       const batch =
         cfg.adapter === "umo-xml"
@@ -274,8 +270,6 @@ export class FeedSchedulerDO extends DurableObject<Env> {
 
       this.consecutiveErrors = 0;
       this.pollGeneration += 1;
-      this.putState("consecutiveErrors", "0");
-      this.putState("pollGeneration", String(this.pollGeneration));
 
       const entityCount =
         result.acceptedObservations + result.tripUpdatesProcessed + result.alertsProcessed;
@@ -304,7 +298,6 @@ export class FeedSchedulerDO extends DurableObject<Env> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.consecutiveErrors += 1;
-      this.putState("consecutiveErrors", String(this.consecutiveErrors));
 
       await this.updateFeedRow(cfg.id, {
         status: "unavailable",
@@ -320,17 +313,13 @@ export class FeedSchedulerDO extends DurableObject<Env> {
         });
       }
 
-      // Record in bounded DLQ for admin replay/inspection
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO dlq_batches (id, received_at, error, attempts, payload_base64)
-         VALUES (?, ?, ?, 1, '')`,
-        `${cfg.id}-${Date.now()}`,
-        nowIso,
-        message.slice(0, 500)
-      );
-      this.ctx.storage.sql.exec(
-        `DELETE FROM dlq_batches WHERE id NOT IN (SELECT id FROM dlq_batches ORDER BY received_at DESC LIMIT 25)`
-      );
+      // Record in bounded in-memory DLQ (0 DO SQLite writes)
+      this.dlqBatches.unshift({
+        id: `${cfg.id}-${Date.now()}`,
+        receivedAt: nowIso,
+        error: message.slice(0, 500),
+      });
+      if (this.dlqBatches.length > 25) this.dlqBatches.length = 25;
 
       return { ok: false, status: "unavailable", error: message, latencyMs: Date.now() - startMs };
     } finally {
@@ -339,10 +328,10 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   }
 
   async replayDlq(): Promise<{ cleared: number; pollResult: Awaited<ReturnType<FeedSchedulerDO["pollNow"]>> }> {
-    const countRow = this.ctx.storage.sql.exec<{ c: number }>("SELECT COUNT(*) as c FROM dlq_batches").one();
-    this.ctx.storage.sql.exec("DELETE FROM dlq_batches");
+    const cleared = this.dlqBatches.length;
+    this.dlqBatches = [];
     const pollResult = await this.pollNow(true);
-    return { cleared: countRow?.c ?? 0, pollResult };
+    return { cleared, pollResult };
   }
 
   override async alarm(): Promise<void> {
@@ -378,8 +367,11 @@ export class FeedSchedulerDO extends DurableObject<Env> {
 
     const next = Date.now() + intervalMs + this.deterministicJitterMs(this.config.id);
     this.nextDueMs = next;
-    this.putState("nextDueMs", String(next));
-    await this.ctx.storage.setAlarm(next);
+    try {
+      await this.ctx.storage.setAlarm(next);
+    } catch {
+      // Non-fatal: */15 watchdog cron re-arms alarms automatically
+    }
   }
 
   private async updateFeedRow(

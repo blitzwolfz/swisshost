@@ -10,31 +10,27 @@ import type {
 import { validateObservationQuality } from "@swisshost/transit-core";
 import type { Env } from "../../api/src/env";
 
-type StoredVehicleRow = {
-  source_vehicle_id: string;
-  vehicle_id: string;
-  payload_json: string;
-  observed_ms: number;
-  received_ms: number;
-  route_id: string | null;
-  trip_id: string | null;
-};
+interface StoredVehicleEntry {
+  observedMs: number;
+  receivedMs: number;
+  state: LiveVehicleState;
+}
 
-type StoredTripUpdateRow = {
-  trip_id: string;
-  service_date: string;
-  route_id: string | null;
-  vehicle_id: string | null;
-  delay_sec: number | null;
-  payload_json: string;
-  updated_ms: number;
-};
+interface StoredTripUpdateEntry {
+  updatedMs: number;
+  update: NormalizedTripUpdate;
+}
 
 interface WsAttachment {
   agencyId: string;
   routeId?: string;
 }
 
+/**
+ * AgencyLiveDO keeps real-time fleet state, trip updates, and recent delta frames
+ * purely in Durable Object RAM — zero DO SQLite rows written per poll — so high-frequency
+ * agencies like TTC (~1,000 vehicles/min) stay at 0% of Cloudflare's free DO SQLite write quota.
+ */
 export class AgencyLiveDO extends DurableObject<Env> {
   private agencyId = "";
   private cursor = 0;
@@ -42,74 +38,13 @@ export class AgencyLiveDO extends DurableObject<Env> {
   private lastSuccessAt: string | null = null;
   private staleAfterSeconds = 120;
 
+  private vehicles = new Map<string, StoredVehicleEntry>();
+  private knownVehicleIds = new Set<string>();
+  private tripUpdates = new Map<string, StoredTripUpdateEntry>();
+  private deltaLog: Array<{ cursor: number; payloadJson: string }> = [];
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => {
-      this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS live_vehicles (
-          source_vehicle_id TEXT PRIMARY KEY,
-          vehicle_id TEXT NOT NULL DEFAULT '',
-          route_id TEXT,
-          trip_id TEXT,
-          observed_ms INTEGER NOT NULL,
-          received_ms INTEGER NOT NULL,
-          payload_json TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS known_vehicles (
-          vehicle_id TEXT PRIMARY KEY,
-          first_seen_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS live_trip_updates (
-          trip_id TEXT PRIMARY KEY,
-          service_date TEXT NOT NULL,
-          route_id TEXT,
-          vehicle_id TEXT,
-          delay_sec INTEGER,
-          payload_json TEXT NOT NULL,
-          updated_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS live_meta (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS delta_log (
-          cursor INTEGER PRIMARY KEY,
-          created_ms INTEGER NOT NULL,
-          payload_json TEXT NOT NULL
-        );
-      `);
-
-      // Forward-compatible column additions for DO instances created before this optimization
-      try {
-        this.ctx.storage.sql.exec("ALTER TABLE live_vehicles ADD COLUMN vehicle_id TEXT NOT NULL DEFAULT ''");
-      } catch {
-        // already exists
-      }
-      try {
-        this.ctx.storage.sql.exec("ALTER TABLE live_vehicles ADD COLUMN trip_id TEXT");
-      } catch {
-        // already exists
-      }
-
-      const metaRows = this.ctx.storage.sql
-        .exec<{ key: string; value: string }>("SELECT key, value FROM live_meta")
-        .toArray();
-      for (const row of metaRows) {
-        if (row.key === "agencyId") this.agencyId = row.value;
-        if (row.key === "cursor") this.cursor = Number(row.value) || 0;
-        if (row.key === "feedStatus") this.feedStatus = row.value as FeedHealthStatus;
-        if (row.key === "lastSuccessAt") this.lastSuccessAt = row.value || null;
-        if (row.key === "staleAfterSeconds") this.staleAfterSeconds = Number(row.value) || 120;
-      }
-    });
-  }
-
-  private setMeta(key: string, value: string): void {
-    this.ctx.storage.sql.exec(
-      "INSERT INTO live_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      key,
-      value
-    );
   }
 
   private hydrateVehicle(raw: LiveVehicleState, nowMs: number): LiveVehicleState {
@@ -146,32 +81,13 @@ export class AgencyLiveDO extends DurableObject<Env> {
     this.staleAfterSeconds = input.staleAfterSeconds;
     this.feedStatus = "fresh";
     this.lastSuccessAt = input.receivedAt;
-    this.setMeta("agencyId", this.agencyId);
-    this.setMeta("staleAfterSeconds", String(this.staleAfterSeconds));
-    this.setMeta("feedStatus", this.feedStatus);
-    this.setMeta("lastSuccessAt", this.lastSuccessAt);
 
     const nowMs = Date.now();
-    const existingRows = this.ctx.storage.sql
-      .exec<StoredVehicleRow>(
-        "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles"
-      )
-      .toArray();
-    const existingMap = new Map<string, { row: StoredVehicleRow; state: LiveVehicleState }>();
-    for (const r of existingRows) {
-      existingMap.set(r.source_vehicle_id, { row: r, state: JSON.parse(r.payload_json) as LiveVehicleState });
-    }
 
-    const knownSet = new Set(
-      this.ctx.storage.sql.exec<{ vehicle_id: string }>("SELECT vehicle_id FROM known_vehicles").toArray().map((r) => r.vehicle_id)
-    );
-
-    // Pull latest trip delays from DO SQLite so live vehicles reflect GTFS-RT TripUpdates immediately
+    // Pull latest trip delays from memory so live vehicles reflect GTFS-RT TripUpdates immediately
     const delayMap = new Map<string, number>();
-    for (const tu of this.ctx.storage.sql
-      .exec<{ trip_id: string; delay_sec: number | null }>("SELECT trip_id, delay_sec FROM live_trip_updates WHERE delay_sec IS NOT NULL")
-      .toArray()) {
-      if (tu.delay_sec !== null) delayMap.set(tu.trip_id, tu.delay_sec);
+    for (const [tripId, entry] of this.tripUpdates) {
+      if (entry.update.delaySec !== null) delayMap.set(tripId, entry.update.delaySec);
     }
 
     const upserts: LiveVehicleState[] = [];
@@ -186,7 +102,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
 
     for (const obs of input.observations) {
       seenIds.add(obs.sourceVehicleId);
-      const prevEntry = existingMap.get(obs.sourceVehicleId);
+      const prevEntry = this.vehicles.get(obs.sourceVehicleId);
       const prevObs: Observation | null = prevEntry
         ? {
             ...obs,
@@ -208,7 +124,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
       const rxMs = Date.parse(obs.receivedAt);
 
       // Preserve newer live state when out-of-order data arrives (PRD §6.4)
-      if (prevEntry && obsMs < prevEntry.row.observed_ms) {
+      if (prevEntry && obsMs < prevEntry.observedMs) {
         continue;
       }
 
@@ -237,13 +153,8 @@ export class AgencyLiveDO extends DurableObject<Env> {
         changedObservations.push(cleaned);
       }
 
-      if (!knownSet.has(cleaned.vehicleId)) {
-        knownSet.add(cleaned.vehicleId);
-        this.ctx.storage.sql.exec(
-          "INSERT OR IGNORE INTO known_vehicles (vehicle_id, first_seen_ms) VALUES (?, ?)",
-          cleaned.vehicleId,
-          nowMs
-        );
+      if (!this.knownVehicleIds.has(cleaned.vehicleId)) {
+        this.knownVehicleIds.add(cleaned.vehicleId);
         newVehicles.push(cleaned);
       }
 
@@ -287,24 +198,11 @@ export class AgencyLiveDO extends DurableObject<Env> {
         nowMs
       );
 
-      this.ctx.storage.sql.exec(
-        `INSERT INTO live_vehicles (source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(source_vehicle_id) DO UPDATE SET
-           vehicle_id = excluded.vehicle_id,
-           route_id = excluded.route_id,
-           trip_id = excluded.trip_id,
-           observed_ms = excluded.observed_ms,
-           received_ms = excluded.received_ms,
-           payload_json = excluded.payload_json`,
-        cleaned.sourceVehicleId,
-        cleaned.vehicleId,
-        cleaned.routeId,
-        cleaned.tripId,
-        obsMs,
-        rxMs,
-        JSON.stringify(state)
-      );
+      this.vehicles.set(cleaned.sourceVehicleId, {
+        observedMs: obsMs,
+        receivedMs: rxMs,
+        state,
+      });
       upserts.push(state);
     }
 
@@ -312,16 +210,15 @@ export class AgencyLiveDO extends DurableObject<Env> {
     const removed: string[] = [];
     if (input.incrementality === "FULL_DATASET" && input.observations.length > 0) {
       const expireBeforeMs = nowMs - Math.max(600_000, this.staleAfterSeconds * 4 * 1000);
-      for (const [id, entry] of existingMap) {
-        if (!seenIds.has(id) && entry.row.received_ms < expireBeforeMs) {
-          this.ctx.storage.sql.exec("DELETE FROM live_vehicles WHERE source_vehicle_id = ?", id);
+      for (const [id, entry] of this.vehicles) {
+        if (!seenIds.has(id) && entry.receivedMs < expireBeforeMs) {
+          this.vehicles.delete(id);
           removed.push(id);
         }
       }
     }
 
     this.cursor += 1;
-    this.setMeta("cursor", String(this.cursor));
 
     const deltaMsg: LiveWsServerMessage = {
       type: "delta",
@@ -332,15 +229,13 @@ export class AgencyLiveDO extends DurableObject<Env> {
       removed,
     };
 
-    this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO delta_log (cursor, created_ms, payload_json) VALUES (?, ?, ?)",
-      this.cursor,
-      nowMs,
-      JSON.stringify(deltaMsg)
-    );
-    this.ctx.storage.sql.exec("DELETE FROM delta_log WHERE cursor < ?", this.cursor - 120);
+    const encodedDelta = JSON.stringify(deltaMsg);
+    this.deltaLog.push({ cursor: this.cursor, payloadJson: encodedDelta });
+    if (this.deltaLog.length > 60) {
+      this.deltaLog.splice(0, this.deltaLog.length - 60);
+    }
 
-    this.broadcastDelta(deltaMsg);
+    this.broadcastDelta(deltaMsg, encodedDelta);
 
     return {
       cursor: this.cursor,
@@ -358,66 +253,59 @@ export class AgencyLiveDO extends DurableObject<Env> {
   async ingestTripUpdates(tripUpdates: NormalizedTripUpdate[]): Promise<{ stored: number }> {
     const nowMs = Date.now();
     for (const tu of tripUpdates.slice(0, 600)) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO live_trip_updates (trip_id, service_date, route_id, vehicle_id, delay_sec, payload_json, updated_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(trip_id) DO UPDATE SET
-           service_date = excluded.service_date,
-           route_id = COALESCE(excluded.route_id, live_trip_updates.route_id),
-           vehicle_id = COALESCE(excluded.vehicle_id, live_trip_updates.vehicle_id),
-           delay_sec = excluded.delay_sec,
-           payload_json = excluded.payload_json,
-           updated_ms = excluded.updated_ms`,
-        tu.tripId,
-        tu.serviceDate,
-        tu.routeId,
-        tu.vehicleId,
-        tu.delaySec,
-        JSON.stringify({ ...tu, stopUpdates: tu.stopUpdates.slice(0, 40) }),
-        nowMs
-      );
+      const existing = this.tripUpdates.get(tu.tripId);
+      this.tripUpdates.set(tu.tripId, {
+        updatedMs: nowMs,
+        update: {
+          ...tu,
+          routeId: tu.routeId ?? existing?.update.routeId ?? null,
+          vehicleId: tu.vehicleId ?? existing?.update.vehicleId ?? null,
+          stopUpdates: tu.stopUpdates.slice(0, 40),
+        },
+      });
     }
-    // Prune stale trip updates older than 4 hours
-    this.ctx.storage.sql.exec("DELETE FROM live_trip_updates WHERE updated_ms < ?", nowMs - 4 * 3600 * 1000);
+    // Prune stale trip updates older than 3 hours
+    const cutoff = nowMs - 3 * 3600 * 1000;
+    for (const [tripId, entry] of this.tripUpdates) {
+      if (entry.updatedMs < cutoff) this.tripUpdates.delete(tripId);
+    }
     return { stored: Math.min(600, tripUpdates.length) };
   }
 
   async getTripUpdates(filters?: { serviceDate?: string; tripId?: string }): Promise<NormalizedTripUpdate[]> {
-    const rows = filters?.tripId
-      ? this.ctx.storage.sql
-          .exec<StoredTripUpdateRow>("SELECT * FROM live_trip_updates WHERE trip_id = ? LIMIT 1", filters.tripId)
-          .toArray()
-      : filters?.serviceDate
-        ? this.ctx.storage.sql
-            .exec<StoredTripUpdateRow>(
-              "SELECT * FROM live_trip_updates WHERE service_date = ? ORDER BY updated_ms DESC LIMIT 500",
-              filters.serviceDate
-            )
-            .toArray()
-        : this.ctx.storage.sql
-            .exec<StoredTripUpdateRow>("SELECT * FROM live_trip_updates ORDER BY updated_ms DESC LIMIT 500")
-            .toArray();
-    return rows.map((r) => JSON.parse(r.payload_json) as NormalizedTripUpdate);
+    if (filters?.tripId) {
+      const found = this.tripUpdates.get(filters.tripId);
+      return found ? [found.update] : [];
+    }
+    const out: NormalizedTripUpdate[] = [];
+    for (const entry of this.tripUpdates.values()) {
+      if (filters?.serviceDate && entry.update.serviceDate !== filters.serviceDate) continue;
+      out.push(entry.update);
+      if (out.length >= 500) break;
+    }
+    return out;
   }
 
   async getVehicle(vehicleId: string): Promise<LiveVehicleState | null> {
-    const rows = this.ctx.storage.sql
-      .exec<{ payload_json: string }>(
-        "SELECT payload_json FROM live_vehicles WHERE vehicle_id = ? OR source_vehicle_id = ? LIMIT 1",
-        vehicleId,
-        vehicleId
-      )
-      .toArray();
-    if (!rows[0]) return null;
-    return this.hydrateVehicle(JSON.parse(rows[0].payload_json) as LiveVehicleState, Date.now());
+    const nowMs = Date.now();
+    const direct = this.vehicles.get(vehicleId);
+    if (direct) return this.hydrateVehicle(direct.state, nowMs);
+    for (const entry of this.vehicles.values()) {
+      if (entry.state.vehicleId === vehicleId) {
+        return this.hydrateVehicle(entry.state, nowMs);
+      }
+    }
+    return null;
   }
 
   async getVehicleByTrip(tripId: string): Promise<LiveVehicleState | null> {
-    const rows = this.ctx.storage.sql
-      .exec<{ payload_json: string }>("SELECT payload_json FROM live_vehicles WHERE trip_id = ? LIMIT 1", tripId)
-      .toArray();
-    if (!rows[0]) return null;
-    return this.hydrateVehicle(JSON.parse(rows[0].payload_json) as LiveVehicleState, Date.now());
+    const nowMs = Date.now();
+    for (const entry of this.vehicles.values()) {
+      if (entry.state.tripId === tripId) {
+        return this.hydrateVehicle(entry.state, nowMs);
+      }
+    }
+    return null;
   }
 
   async getStats(): Promise<{
@@ -426,16 +314,12 @@ export class AgencyLiveDO extends DurableObject<Env> {
     feedStatus: FeedHealthStatus;
     lastSuccessAt: string | null;
   }> {
-    const rows = this.ctx.storage.sql
-      .exec<{ route_id: string | null; c: number }>(
-        "SELECT route_id, COUNT(*) as c FROM live_vehicles GROUP BY route_id"
-      )
-      .toArray();
     let activeCount = 0;
     const routeCounts: Record<string, number> = {};
-    for (const r of rows) {
-      activeCount += r.c;
-      if (r.route_id) routeCounts[r.route_id] = r.c;
+    for (const entry of this.vehicles.values()) {
+      activeCount++;
+      const r = entry.state.routeId;
+      if (r) routeCounts[r] = (routeCounts[r] ?? 0) + 1;
     }
     return {
       activeCount,
@@ -455,10 +339,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
     this.feedStatus = input.feedStatus;
     if (input.lastSuccessAt !== undefined) {
       this.lastSuccessAt = input.lastSuccessAt;
-      this.setMeta("lastSuccessAt", input.lastSuccessAt ?? "");
     }
-    this.setMeta("agencyId", this.agencyId);
-    this.setMeta("feedStatus", this.feedStatus);
 
     const statusMsg: LiveWsServerMessage = {
       type: "status",
@@ -494,26 +375,17 @@ export class AgencyLiveDO extends DurableObject<Env> {
       this.agencyId = filters.agencyId;
     }
     const nowMs = Date.now();
-    const rows = filters?.routeId
-      ? this.ctx.storage.sql
-          .exec<StoredVehicleRow>(
-            "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles WHERE route_id = ?",
-            filters.routeId
-          )
-          .toArray()
-      : this.ctx.storage.sql
-          .exec<StoredVehicleRow>(
-            "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles"
-          )
-          .toArray();
-
-    let vehicles = rows.map((r) => this.hydrateVehicle(JSON.parse(r.payload_json) as LiveVehicleState, nowMs));
-
-    if (filters?.bbox) {
-      const [minLon, minLat, maxLon, maxLat] = filters.bbox;
-      vehicles = vehicles.filter(
-        (v) => v.lon >= minLon && v.lon <= maxLon && v.lat >= minLat && v.lat <= maxLat
-      );
+    let vehicles: LiveVehicleState[] = [];
+    for (const entry of this.vehicles.values()) {
+      if (filters?.routeId && entry.state.routeId !== filters.routeId) continue;
+      const hydrated = this.hydrateVehicle(entry.state, nowMs);
+      if (filters?.bbox) {
+        const [minLon, minLat, maxLon, maxLat] = filters.bbox;
+        if (hydrated.lon < minLon || hydrated.lon > maxLon || hydrated.lat < minLat || hydrated.lat > maxLat) {
+          continue;
+        }
+      }
+      vehicles.push(hydrated);
     }
 
     const effectiveStatus: FeedHealthStatus =
@@ -534,10 +406,12 @@ export class AgencyLiveDO extends DurableObject<Env> {
     };
   }
 
-  private broadcastDelta(delta: Extract<LiveWsServerMessage, { type: "delta" }>): void {
+  private broadcastDelta(
+    delta: Extract<LiveWsServerMessage, { type: "delta" }>,
+    fullEncoded: string
+  ): void {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
-    const fullEncoded = JSON.stringify(delta);
 
     for (const ws of sockets) {
       try {
@@ -615,46 +489,28 @@ export class AgencyLiveDO extends DurableObject<Env> {
         routeId: parsed.routeId,
       } satisfies WsAttachment);
 
-      if (parsed.cursor !== undefined && parsed.cursor < this.cursor) {
-        const missed = this.ctx.storage.sql
-          .exec<{ payload_json: string }>(
-            "SELECT payload_json FROM delta_log WHERE cursor > ? ORDER BY cursor ASC LIMIT 40",
-            parsed.cursor
-          )
-          .toArray();
-
-        if (missed.length === 0 || this.cursor - parsed.cursor > 40) {
-          const snap = await this.getSnapshot({ agencyId: parsed.agencyId, routeId: parsed.routeId });
-          ws.send(
-            JSON.stringify({
-              type: "snapshot",
-              agencyId: snap.agencyId || parsed.agencyId,
-              cursor: snap.cursor,
-              serverTime: snap.serverTime,
-              feedStatus: snap.feedStatus,
-              lastSuccessAt: snap.lastSuccessAt,
-              vehicles: snap.vehicles,
-            } satisfies LiveWsServerMessage)
-          );
+      if (parsed.cursor !== undefined && parsed.cursor < this.cursor && this.cursor - parsed.cursor <= 40) {
+        const missed = this.deltaLog.filter((d) => d.cursor > parsed.cursor!);
+        if (missed.length > 0 && !parsed.routeId) {
+          for (const item of missed) {
+            ws.send(item.payloadJson);
+          }
           return;
         }
-        for (const row of missed) {
-          ws.send(row.payload_json);
-        }
-      } else {
-        const snap = await this.getSnapshot({ agencyId: parsed.agencyId, routeId: parsed.routeId });
-        ws.send(
-          JSON.stringify({
-            type: "snapshot",
-            agencyId: snap.agencyId || parsed.agencyId,
-            cursor: snap.cursor,
-            serverTime: snap.serverTime,
-            feedStatus: snap.feedStatus,
-            lastSuccessAt: snap.lastSuccessAt,
-            vehicles: snap.vehicles,
-          } satisfies LiveWsServerMessage)
-        );
       }
+
+      const snap = await this.getSnapshot({ agencyId: parsed.agencyId, routeId: parsed.routeId });
+      ws.send(
+        JSON.stringify({
+          type: "snapshot",
+          agencyId: snap.agencyId || parsed.agencyId,
+          cursor: snap.cursor,
+          serverTime: snap.serverTime,
+          feedStatus: snap.feedStatus,
+          lastSuccessAt: snap.lastSuccessAt,
+          vehicles: snap.vehicles,
+        } satisfies LiveWsServerMessage)
+      );
     }
   }
 
