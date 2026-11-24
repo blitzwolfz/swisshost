@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import {
   ExportRequestSchema,
   FavoriteInputSchema,
-  OpenApiDocument,
   SubscriptionInputSchema,
   createProblemDetails,
 } from "@swisshost/contracts";
@@ -105,6 +104,67 @@ app.onError((err, c) => {
   );
 });
 
+function isAllowedAppOrigin(value: string | undefined, publicOrigin?: string): boolean {
+  if (!value) return false;
+  try {
+    const u = new URL(value);
+    const origin = u.origin.toLowerCase();
+    if (publicOrigin && origin === publicOrigin.toLowerCase().replace(/\/+$/, "")) return true;
+    return (
+      origin === "https://swisshost.cc" ||
+      origin === "https://www.swisshost.cc" ||
+      origin === "https://swisshost.saminm-qureshi.workers.dev" ||
+      u.hostname === "localhost" ||
+      u.hostname === "127.0.0.1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Restrict /api/v1/* to first-party Swisshost app requests only (no public third-party API access)
+app.use("/api/v1/*", async (c, next) => {
+  // Keep lightweight liveness check and signed export file downloads accessible
+  if (c.req.path === "/api/v1/health") return next();
+  if (/^\/api\/v1\/exports\/[^/]+$/.test(c.req.path) && c.req.query("token")) return next();
+
+  const pubOrigin = c.env.PUBLIC_ORIGIN;
+  const origin = c.req.header("Origin");
+  const referer = c.req.header("Referer");
+  const secFetchSite = c.req.header("Sec-Fetch-Site")?.toLowerCase();
+  const appHeader = c.req.header("X-Swisshost-App");
+  const isWsUpgrade = c.req.header("Upgrade")?.toLowerCase() === "websocket";
+
+  // Reject any cross-site request or foreign Origin/Referer
+  if (secFetchSite && secFetchSite !== "same-origin") {
+    return c.json(createProblemDetails(403, "Forbidden", "Public API access is disabled.", c.get("requestId")), 403);
+  }
+  if (origin && !isAllowedAppOrigin(origin, pubOrigin)) {
+    return c.json(createProblemDetails(403, "Forbidden", "Public API access is disabled.", c.get("requestId")), 403);
+  }
+  if (referer && !isAllowedAppOrigin(referer, pubOrigin)) {
+    return c.json(createProblemDetails(403, "Forbidden", "Public API access is disabled.", c.get("requestId")), 403);
+  }
+
+  if (isWsUpgrade) {
+    if (!isAllowedAppOrigin(origin, pubOrigin)) {
+      return c.json(createProblemDetails(403, "Forbidden", "Public WebSocket access is disabled.", c.get("requestId")), 403);
+    }
+    return next();
+  }
+
+  const hasTrustedOriginSignal =
+    secFetchSite === "same-origin" ||
+    isAllowedAppOrigin(origin, pubOrigin) ||
+    isAllowedAppOrigin(referer, pubOrigin);
+
+  if (!hasTrustedOriginSignal || (!appHeader && secFetchSite !== "same-origin")) {
+    return c.json(createProblemDetails(403, "Forbidden", "Public API access is disabled.", c.get("requestId")), 403);
+  }
+
+  return next();
+});
+
 // Edge-cache hot read-only endpoints via Cloudflare Cache API (zero extra D1/DO calls under traffic spikes)
 const EDGE_CACHE_PATHS = new Set(["/api/v1/agencies", "/api/v1/status"]);
 app.use("/api/v1/*", async (c, next) => {
@@ -136,10 +196,9 @@ app.use("/api/v1/*", async (c, next) => {
 // Mount admin routes
 app.route("/admin", createAdminApp());
 
-// OpenAPI spec
+// OpenAPI spec disabled (internal app API only)
 app.get("/openapi.json", (c) => {
-  c.header("Cache-Control", "public, max-age=3600");
-  return c.json(OpenApiDocument);
+  return c.json(createProblemDetails(404, "Not found", "Public API documentation is disabled.", c.get("requestId")), 404);
 });
 
 // ---------------------------------------------------------------------------

@@ -270,9 +270,6 @@ export function Layout() {
       <Link to="/alerts">Service alerts</Link>
       <Link to="/status">Feed status</Link>
       {!isStandalone && <Link to="/install">Save as app</Link>}
-      <a href="/openapi.json" target="_blank" rel="noreferrer">
-        API
-      </a>
       <Link to="/account">Account</Link>
       <Link to="/admin">Admin</Link>
     </>

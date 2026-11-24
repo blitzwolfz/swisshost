@@ -64,6 +64,7 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "include",
     headers: {
       Accept: "application/json",
+      "X-Swisshost-App": "1",
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...(init?.headers ?? {}),
     },
