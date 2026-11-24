@@ -1,13 +1,36 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowDownUp, ArrowRight, Bus, Clock, Footprints, LocateFixed, RefreshCw, X } from "lucide-react";
-import { apiJson, formatClock } from "../lib/api";
+import {
+  AlertTriangle,
+  ArrowDownUp,
+  ArrowRight,
+  Bookmark,
+  Bus,
+  Clock,
+  Footprints,
+  LocateFixed,
+  Navigation,
+  RefreshCw,
+  ShieldCheck,
+  Ticket,
+  TrainFront,
+  X,
+} from "lucide-react";
+import { apiJson, formatClock, isTrainMode, type VehicleMode } from "../lib/api";
 import { useUserLocation } from "../hooks/useUserLocation";
 import { useWeather } from "../hooks/useWeather";
 import { usePreferences } from "../lib/preferences";
 import { agencyShortName } from "../lib/agencies";
 import { routeColor } from "../lib/routeColors";
+import {
+  deleteCommutePreset,
+  loadCommutePresets,
+  saveActiveTrip,
+  saveCommutePreset,
+  type CommutePreset,
+  type PlanOption,
+} from "../lib/activeTrip";
 import { EmptyState, LiveLegend, RouteBadge } from "../components/Transit";
 import { TripWeatherNote } from "../components/Weather";
 
@@ -20,62 +43,9 @@ interface GeoChoice {
   kind: "stop" | "place";
 }
 
-interface UpcomingBus {
-  departureTime: string;
-  arrivalTime: string;
-  etaMinutes: number;
-  waitMinutes: number;
-  rideMinutes: number;
-  isLive: boolean;
-  source: "trip_update" | "live_gps" | "scheduled";
-  vehicleId: string | null;
-  fleetNumber: string | null;
-  tripId: string | null;
-  headsign: string | null;
-  stopsAway: number | null;
-  delaySec: number | null;
-}
-
-interface PlanLeg {
-  mode: "walk" | "transit";
-  agencyId?: string;
-  routeId?: string;
-  routeShortName?: string;
-  routeLongName?: string | null;
-  routeColor?: string | null;
-  fromName: string;
-  fromStopId?: string;
-  toName: string;
-  toStopId?: string;
-  distanceMeters: number;
-  minutes: number;
-  waitMinutes?: number;
-  departureTime?: string | null;
-  arrivalTime?: string | null;
-  stopsCount?: number | null;
-  activeVehicles?: number;
-  nearestVehicleId?: string | null;
-  nearestFleetNumber?: string | null;
-  nearestHeadsign?: string | null;
-  upcomingBuses?: UpcomingBus[];
-}
-
-interface PlanOption {
-  id: string;
-  kind: "direct" | "transfer";
-  agencyId: string;
-  serviceStatus: "live" | "scheduled" | "no_upcoming";
-  leaveAt: string;
-  arriveAt: string;
-  nextDepartureAt: string | null;
-  totalMinutes: number;
-  walkMinutes: number;
-  waitMinutes: number;
-  rideMinutes: number;
-  legs: PlanLeg[];
-}
-
 interface PlanResponse {
+  from?: { lat: number; lon: number };
+  to?: { lat: number; lon: number };
   departAt: string;
   serverTime: string;
   timezone: string;
@@ -216,6 +186,7 @@ function PlaceField({
 
 export default function PlanPage() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { locateOnce, error: gpsError } = useUserLocation();
   const { agencyId, showWeather, setShowWeather } = usePreferences();
 
@@ -255,6 +226,31 @@ export default function PlanPage() {
   const [customTime, setCustomTime] = useState<string>(() => toLocalDateTimeInput(new Date()));
   const [clockNow, setClockNow] = useState<Date>(() => new Date());
   const [locating, setLocating] = useState(false);
+  const [presets, setPresets] = useState<CommutePreset[]>(() => loadCommutePresets());
+  const [presetName, setPresetName] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+
+  const QUICK_ONTARIO_TRIPS: Array<{
+    name: string;
+    origin: GeoChoice;
+    dest: GeoChoice;
+  }> = [
+    {
+      name: "Guelph → Toronto",
+      origin: { id: "q-guelph", label: "Guelph Central GO", subtitle: "Guelph, ON", lat: 43.5446, lon: -80.2465, kind: "stop" },
+      dest: { id: "q-bloor", label: "Bloor-Yonge Station", subtitle: "Toronto, ON", lat: 43.6709, lon: -79.3857, kind: "stop" },
+    },
+    {
+      name: "Mississauga → Bloor-Yonge",
+      origin: { id: "q-sq1", label: "City Centre Transit Terminal (Square One)", subtitle: "Mississauga, ON", lat: 43.5931, lon: -79.6443, kind: "stop" },
+      dest: { id: "q-bloor2", label: "Bloor-Yonge Station", subtitle: "Toronto, ON", lat: 43.6709, lon: -79.3857, kind: "stop" },
+    },
+    {
+      name: "Kitchener → Union Station",
+      origin: { id: "q-kit", label: "Kitchener GO", subtitle: "Kitchener, ON", lat: 43.4557, lon: -80.4932, kind: "stop" },
+      dest: { id: "q-union", label: "Union Station", subtitle: "Toronto, ON", lat: 43.6452, lon: -79.3806, kind: "stop" },
+    },
+  ];
 
   // Keep the visible "current time" clock ticking every 15s
   useEffect(() => {
@@ -315,7 +311,7 @@ export default function PlanPage() {
           </nav>
           <h1 className="sh-title sh-title-sm">Plan a trip</h1>
           <p className="sh-lede">
-            See direct and 1-transfer buses timed to right now, with live approaching vehicles and what comes up next.
+            See direct and cross-agency transfer trips timed to right now, then open any route directly in the On-Board map window.
           </p>
         </div>
         <button type="button" className="sh-btn" onClick={useMyLocation} disabled={locating}>
@@ -423,6 +419,105 @@ export default function PlanPage() {
 
       <TripWeatherNote weather={weatherData} departAtIso={departAtIso ?? clockNow.toISOString()} />
 
+      {/* Commute Presets & Quick Ontario Trips */}
+      <section aria-label="Saved commutes" className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-bold sh-muted inline-flex items-center gap-1.5">
+            <Bookmark size={14} aria-hidden="true" />
+            {presets.length > 0 ? "Saved commutes" : "Quick cross-agency trips"}
+          </span>
+          {origin && dest && !savingPreset && (
+            <button
+              type="button"
+              className="bg-transparent border-0 p-0 underline cursor-pointer text-xs"
+              style={{ color: "var(--accent)", font: "inherit" }}
+              onClick={() => {
+                setPresetName(`${origin.label.split(",")[0]} → ${dest.label.split(",")[0]}`.slice(0, 32));
+                setSavingPreset(true);
+              }}
+            >
+              Pin this commute
+            </button>
+          )}
+        </div>
+
+        {savingPreset && origin && dest && (
+          <form
+            className="flex flex-wrap items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!presetName.trim()) return;
+              setPresets(
+                saveCommutePreset({
+                  name: presetName.trim(),
+                  origin: { label: origin.label, subtitle: origin.subtitle, lat: origin.lat, lon: origin.lon },
+                  dest: { label: dest.label, subtitle: dest.subtitle, lat: dest.lat, lon: dest.lon },
+                })
+              );
+              setSavingPreset(false);
+              setPresetName("");
+            }}
+          >
+            <input
+              type="text"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              placeholder="e.g. Home → Work"
+              aria-label="Commute preset name"
+              className="sh-input text-xs flex-1 min-w-[180px]"
+            />
+            <button type="submit" className="sh-btn sh-btn-primary text-xs" style={{ minHeight: 38 }}>
+              Save
+            </button>
+            <button type="button" className="sh-btn text-xs" style={{ minHeight: 38 }} onClick={() => setSavingPreset(false)}>
+              Cancel
+            </button>
+          </form>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {presets.length > 0
+            ? presets.map((p) => (
+                <span key={p.id} className="inline-flex items-stretch">
+                  <button
+                    type="button"
+                    className="sh-btn text-xs"
+                    style={{ minHeight: 34, padding: "0 0.65rem" }}
+                    onClick={() => {
+                      setOrigin({ id: `${p.id}-o`, ...p.origin, kind: "place" });
+                      setDest({ id: `${p.id}-d`, ...p.dest, kind: "place" });
+                    }}
+                  >
+                    {p.name}
+                  </button>
+                  <button
+                    type="button"
+                    className="sh-btn text-xs"
+                    aria-label={`Remove ${p.name}`}
+                    style={{ minHeight: 34, padding: "0 0.4rem", borderLeft: 0 }}
+                    onClick={() => setPresets(deleteCommutePreset(p.id))}
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                </span>
+              ))
+            : QUICK_ONTARIO_TRIPS.map((qt) => (
+                <button
+                  key={qt.name}
+                  type="button"
+                  className="sh-btn text-xs"
+                  style={{ minHeight: 34, padding: "0 0.65rem" }}
+                  onClick={() => {
+                    setOrigin(qt.origin);
+                    setDest(qt.dest);
+                  }}
+                >
+                  {qt.name}
+                </button>
+              ))}
+        </div>
+      </section>
+
       {!origin || !dest ? (
         <EmptyState>
           Pick both a starting point and a destination above to see upcoming buses and live arrival times.
@@ -449,10 +544,60 @@ export default function PlanPage() {
 
           <LiveLegend />
 
+          {/* Live "Leave-By" Countdown Banner for the fastest current option */}
+          {timeMode === "now" &&
+            data.options[0] &&
+            data.options[0].nextDepartureAt &&
+            (() => {
+              const top = data.options[0]!;
+              const firstWalk = top.legs[0]?.mode === "walk" ? top.legs[0].minutes : 0;
+              const firstTransit = top.legs.find((l) => l.mode === "transit");
+              const depMs = Date.parse(top.nextDepartureAt!);
+              const leaveByMs = depMs - firstWalk * 60_000;
+              const minsUntilLeave = Math.round((leaveByMs - clockNow.getTime()) / 60_000);
+              const weatherExtra =
+                weatherData &&
+                /snow|rain|freezing|ice/i.test(weatherData.current.condition)
+                  ? " · Allow 2–3 extra min for weather"
+                  : "";
+              return (
+                <div
+                  className="sh-surface px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-sm"
+                  style={{ borderLeft: "4px solid var(--accent)" }}
+                  role="status"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Clock size={16} aria-hidden="true" style={{ color: "var(--accent)" }} />
+                    <span>
+                      {minsUntilLeave <= 1 ? (
+                        <strong>Leave now</strong>
+                      ) : (
+                        <>
+                          Leave in <strong className="tabular-nums">{minsUntilLeave} min</strong> (by{" "}
+                          <strong className="tabular-nums">{formatClock(new Date(leaveByMs).toISOString())}</strong>)
+                        </>
+                      )}{" "}
+                      to catch{" "}
+                      <strong>
+                        {agencyShortName(firstTransit?.agencyId ?? top.agencyId)} {firstTransit?.routeShortName}
+                      </strong>
+                      {weatherExtra && <span className="sh-muted">{weatherExtra}</span>}
+                    </span>
+                  </span>
+                  {top.fareEstimate && (
+                    <span className="text-xs font-bold tabular-nums" style={{ color: "var(--accent)" }}>
+                      {top.fareEstimate.summary}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
           {data.options.length === 0 ? (
             <EmptyState>
               No direct or 1-transfer transit route was found between these two points. Try choosing a nearby main street
-              or transit stop in Guelph, Toronto (TTC), Thunder Bay, or along the GO network.
+              or transit stop in Toronto (TTC), Mississauga (MiWay), Brampton, York Region (YRT), Durham (DRT), Oakville,
+              Milton, Hamilton (HSR), Guelph, Waterloo Region (GRT), Thunder Bay, Ontario Northland, or along the GO network.
             </EmptyState>
           ) : (
             <div className="space-y-5">
@@ -460,6 +605,25 @@ export default function PlanPage() {
                 const firstTransit = opt.legs.find((l) => l.mode === "transit");
                 const firstBus = firstTransit?.upcomingBuses?.[0] ?? null;
                 const noService = opt.serviceStatus === "no_upcoming";
+                const agencyList = opt.agencies?.length ? opt.agencies : [opt.agencyId];
+                const isCrossAgency = Boolean(opt.isCrossAgency || agencyList.length > 1);
+
+                const launchTripOnBoard = () => {
+                  if (!origin || !dest) return;
+                  const tripId = `${opt.id}-${Date.now().toString(36)}`;
+                  saveActiveTrip({
+                    id: tripId,
+                    originLabel: origin.label,
+                    originLat: origin.lat,
+                    originLon: origin.lon,
+                    destLabel: dest.label,
+                    destLat: dest.lat,
+                    destLon: dest.lon,
+                    option: opt,
+                    startedAt: new Date().toISOString(),
+                  });
+                  navigate(`/?trip=${encodeURIComponent(tripId)}`);
+                };
 
                 return (
                   <article
@@ -481,20 +645,77 @@ export default function PlanPage() {
                                 <RouteBadge
                                   size="lg"
                                   label={leg.routeShortName ?? leg.routeId ?? "—"}
-                                  color={routeColor(opt.agencyId, leg.routeId, leg.routeColor)}
+                                  color={routeColor(leg.agencyId ?? opt.agencyId, leg.routeId, leg.routeColor)}
                                 />
                               </React.Fragment>
                             ))}
-                          <span className="text-sm font-bold">{agencyShortName(opt.agencyId)}</span>
-                          <span className="text-sm sh-muted">· {opt.kind === "direct" ? "Direct" : "1 transfer"}</span>
+                          <span className="text-sm font-bold">
+                            {agencyList.map((a) => agencyShortName(a)).join(" → ")}
+                          </span>
+                          <span className="text-sm sh-muted">
+                            ·{" "}
+                            {opt.kind === "direct"
+                              ? "Direct"
+                              : (opt.transfersCount ?? 1) >= 2
+                                ? `${opt.transfersCount} transfers${isCrossAgency ? " · Cross-agency" : ""}`
+                                : isCrossAgency
+                                  ? "Cross-agency transfer"
+                                  : "1 transfer"}
+                          </span>
+                        </div>
+
+                        {/* Ontario One Fare / PRESTO estimate + Transfer Connection Risk badges */}
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          {opt.fareEstimate && (
+                            <span
+                              className="inline-flex items-center gap-1 px-2 py-0.5 tabular-nums font-bold"
+                              style={{
+                                border: "1px solid var(--rule)",
+                                background: opt.fareEstimate.oneFareApplied ? "var(--paper-raised)" : "transparent",
+                                color: opt.fareEstimate.oneFareApplied ? "var(--accent)" : "var(--ink)",
+                              }}
+                              title={opt.fareEstimate.breakdown
+                                .map((b) => `${agencyShortName(b.agencyId)}: $${b.chargedCad.toFixed(2)}${b.note ? ` (${b.note})` : ""}`)
+                                .join(" + ")}
+                            >
+                              <Ticket size={13} aria-hidden="true" />
+                              {opt.fareEstimate.summary}
+                            </span>
+                          )}
+                          {opt.transferRisks?.map((risk, rIdx) => (
+                            <span
+                              key={rIdx}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 font-bold"
+                              style={{
+                                border: "1px solid var(--rule)",
+                                color:
+                                  risk.level === "likely_missed"
+                                    ? "var(--danger)"
+                                    : risk.level === "tight"
+                                      ? "var(--accent)"
+                                      : "var(--ink-soft)",
+                              }}
+                            >
+                              {risk.level === "safe" ? (
+                                <ShieldCheck size={13} aria-hidden="true" />
+                              ) : (
+                                <AlertTriangle size={13} aria-hidden="true" />
+                              )}
+                              {risk.message}
+                              {risk.level !== "safe" && risk.backupDepartureTime
+                                ? ` · Backup ${formatClock(risk.backupDepartureTime)}`
+                                : ""}
+                            </span>
+                          ))}
                         </div>
 
                         <div className="text-sm">
                           {firstBus ? (
                             firstBus.isLive ? (
                               <span className="sh-live">
-                                Next bus in {formatEtaLabel(firstBus.etaMinutes)} ({formatClock(firstBus.departureTime)})
-                                {firstBus.fleetNumber ? ` · Bus #${firstBus.fleetNumber}` : ""}
+                                Next {isTrainMode(firstTransit?.vehicleMode as VehicleMode) ? "train" : "bus"} in{" "}
+                                {formatEtaLabel(firstBus.etaMinutes)} ({formatClock(firstBus.departureTime)})
+                                {firstBus.fleetNumber ? ` · #${firstBus.fleetNumber}` : ""}
                                 {firstBus.stopsAway !== null
                                   ? firstBus.stopsAway === 0
                                     ? " · at stop"
@@ -503,33 +724,39 @@ export default function PlanPage() {
                               </span>
                             ) : (
                               <span className="sh-sched">
-                                Next scheduled bus at {formatClock(firstBus.departureTime)} (in{" "}
-                                {formatEtaLabel(firstBus.etaMinutes)})
+                                Next scheduled {isTrainMode(firstTransit?.vehicleMode as VehicleMode) ? "train" : "departure"} at{" "}
+                                {formatClock(firstBus.departureTime)} (in {formatEtaLabel(firstBus.etaMinutes)})
                               </span>
                             )
                           ) : (
                             <span className="sh-sched">
-                              No upcoming buses found around {formatClock(data.departAt)}
+                              No upcoming departures found around {formatClock(data.departAt)}
                             </span>
                           )}
                         </div>
                       </div>
 
-                      <div className="text-right shrink-0">
-                        <div className="text-2xl font-extrabold tabular-nums leading-none">
-                          {noService ? `~${opt.totalMinutes} min` : `${opt.totalMinutes} min`}
-                        </div>
-                        {!noService && (
-                          <div className="text-sm font-bold tabular-nums mt-1">
-                            {formatClock(opt.leaveAt)} → {formatClock(opt.arriveAt)}
+                      <div className="text-right shrink-0 space-y-2">
+                        <div>
+                          <div className="text-2xl font-extrabold tabular-nums leading-none">
+                            {noService ? `~${opt.totalMinutes} min` : `${opt.totalMinutes} min`}
                           </div>
-                        )}
-                        <div className="text-xs tabular-nums sh-muted mt-0.5">
-                          {opt.walkMinutes}m walk
-                          {opt.waitMinutes > 0 ? ` · ${opt.waitMinutes}m wait` : ""}
-                          {" · "}
-                          {opt.rideMinutes}m ride
+                          {!noService && (
+                            <div className="text-sm font-bold tabular-nums mt-1">
+                              {formatClock(opt.leaveAt)} → {formatClock(opt.arriveAt)}
+                            </div>
+                          )}
+                          <div className="text-xs tabular-nums sh-muted mt-0.5">
+                            {opt.walkMinutes}m walk
+                            {opt.waitMinutes > 0 ? ` · ${opt.waitMinutes}m wait` : ""}
+                            {" · "}
+                            {opt.rideMinutes}m ride
+                          </div>
                         </div>
+                        <button type="button" className="sh-btn sh-btn-primary text-xs" onClick={launchTripOnBoard}>
+                          <Navigation size={15} aria-hidden="true" />
+                          Go on map · On board
+                        </button>
                       </div>
                     </div>
 
@@ -544,6 +771,8 @@ export default function PlanPage() {
                           <div className="flex items-start gap-3 min-w-0 flex-1">
                             {leg.mode === "walk" ? (
                               <Footprints size={18} className="mt-0.5 shrink-0 sh-muted" aria-hidden="true" />
+                            ) : isTrainMode(leg.vehicleMode as VehicleMode) ? (
+                              <TrainFront size={18} className="mt-0.5 shrink-0" style={{ color: "var(--accent)" }} aria-hidden="true" />
                             ) : (
                               <Bus size={18} className="mt-0.5 shrink-0" style={{ color: "var(--accent)" }} aria-hidden="true" />
                             )}
@@ -559,6 +788,9 @@ export default function PlanPage() {
                                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                                     <span>
                                       Take{" "}
+                                      {isCrossAgency && leg.agencyId && (
+                                        <span className="font-bold">{agencyShortName(leg.agencyId)} </span>
+                                      )}
                                       <Link
                                         to={`/routes/${leg.agencyId}/${encodeURIComponent(leg.routeId!)}`}
                                         className="font-bold"
@@ -593,6 +825,24 @@ export default function PlanPage() {
                                     {leg.arrivalTime ? ` (${formatClock(leg.arrivalTime)})` : ""}
                                     {leg.stopsCount ? ` · ${leg.stopsCount} stops` : ""}
                                   </div>
+
+                                  {leg.alerts && leg.alerts.length > 0 && (
+                                    <div
+                                      className="p-2 text-xs space-y-0.5"
+                                      style={{ borderLeft: "3px solid var(--danger)", background: "var(--paper-raised)" }}
+                                      role="alert"
+                                    >
+                                      {leg.alerts.map((al) => (
+                                        <div key={al.id} className="flex items-start gap-1.5">
+                                          <AlertTriangle size={13} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} aria-hidden="true" />
+                                          <span>
+                                            <strong>{al.effect ? `${al.effect.replace(/_/g, " ")}: ` : "Alert: "}</strong>
+                                            {al.headerText}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
 
                                   {/* Upcoming buses strip for this leg */}
                                   {leg.upcomingBuses && leg.upcomingBuses.length > 0 ? (

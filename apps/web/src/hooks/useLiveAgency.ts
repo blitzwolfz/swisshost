@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveVehicle } from "../lib/api";
 import { apiJson } from "../lib/api";
+import { AGENCY_ORDER } from "../lib/agencies";
 
 interface LiveState {
   vehicles: LiveVehicle[];
@@ -76,7 +77,7 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
     const fetchSnapshot = async (mode: "connecting" | "polling" | "live_ws" = "polling") => {
       try {
         if (agencyId === "all") {
-          const agencyIds = ["guelph", "ttc", "go", "thunderbay"];
+          const agencyIds = [...AGENCY_ORDER];
           const responses = await Promise.all(
             agencyIds.map((id) =>
               apiJson<{

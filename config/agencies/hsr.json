@@ -1,0 +1,63 @@
+{
+  "id": "hsr",
+  "name": "Hamilton Street Railway (HSR)",
+  "shortName": "HSR",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-79.8711, 43.2557],
+  "defaultZoom": 11.8,
+  "enabled": true,
+  "attribution": "Data provided by City of Hamilton Open Data (Hamilton Street Railway / HSR)",
+  "licenseUrl": "https://open.hamilton.ca/",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "hsr-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://opendata.hamilton.ca/GTFS-Static/google_transit.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "hsr-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://opendata.hamilton.ca/GTFS-RT/GTFS_VehiclePositions.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "hsr-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://opendata.hamilton.ca/GTFS-RT/GTFS_TripUpdates.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "hsr-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://opendata.hamilton.ca/GTFS-RT/GTFS_ServiceAlerts.pb",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

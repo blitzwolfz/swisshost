@@ -1,0 +1,74 @@
+{
+  "id": "grt",
+  "name": "Grand River Transit (GRT)",
+  "shortName": "GRT",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus", "streetcar"],
+  "center": [-80.4925, 43.4516],
+  "defaultZoom": 11.8,
+  "enabled": true,
+  "attribution": "Data provided by Region of Waterloo Open Data (Grand River Transit & ION LRT)",
+  "licenseUrl": "https://www.grt.ca/en/about-grt/open-data.aspx",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "grt-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/0",
+      "fallbackUrl": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/1",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "grt-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions/1",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "grt-positions-ion",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/vehiclepositions/2",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "grt-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/tripupdates/1",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "grt-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://webapps.regionofwaterloo.ca/api/grt-routes/api/alerts",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

@@ -19,11 +19,16 @@ import {
 } from "@swisshost/database";
 import {
   buildCorridorDepartureSchedule,
+  computeOnBoardRouteProgress,
   computeTrapezoidalKinematics,
   computeUpcomingBusesForLeg,
   detectStopEvent,
+  estimateOntarioTripFare,
+  evaluateTransferRisk,
   evaluateTripMatch,
+  findCrossAgencyTransferPairs,
   findRailPlanCandidates,
+  findRailToRailTransfers,
   findWeatherForTripWindow,
   generateScheduledRailVehicles,
   getCorridorHeadwayMinutes,
@@ -38,6 +43,16 @@ import {
   resolveEcccSiteId,
   validateObservationQuality,
 } from "@swisshost/transit-core";
+import { AgencyConfigSchema } from "@swisshost/contracts";
+import miwayConfig from "../config/agencies/miway.json";
+import miltonConfig from "../config/agencies/milton.json";
+import ontarionorthlandConfig from "../config/agencies/ontarionorthland.json";
+import grtConfig from "../config/agencies/grt.json";
+import bramptonConfig from "../config/agencies/brampton.json";
+import yrtConfig from "../config/agencies/yrt.json";
+import oakvilleConfig from "../config/agencies/oakville.json";
+import hsrConfig from "../config/agencies/hsr.json";
+import drtConfig from "../config/agencies/drt.json";
 import {
   buildSampleGtfsRtVehiclesProtobuf,
   buildSampleGtfsStaticZip,
@@ -740,5 +755,156 @@ describe("Weather — Environment and Climate Change Canada (ECCC) Parser", () =
     expect(futureTrip.tempC).toBe(-3);
     expect(futureTrip.precipChancePct).toBe(80);
     expect(futureTrip.advisoryNote).toContain("Snow");
+  });
+});
+
+describe("New Ontario Agencies, Cross-Agency Transfers & Location-Based On-Board Progress", () => {
+  it("validates all 9 new Ontario agency configs, allowlisted feed hosts, modes, and ECCC hubs", () => {
+    for (const cfg of [
+      miwayConfig,
+      miltonConfig,
+      ontarionorthlandConfig,
+      grtConfig,
+      bramptonConfig,
+      yrtConfig,
+      oakvilleConfig,
+      hsrConfig,
+      drtConfig,
+    ]) {
+      const parsed = AgencyConfigSchema.parse(cfg);
+      for (const feed of parsed.feeds) {
+        expect(() => validateFeedUrl(feed.url)).not.toThrow();
+      }
+    }
+
+    expect(inferVehicleMode("grt", "301")).toBe("streetcar");
+    expect(inferVehicleMode("grt", "7")).toBe("bus");
+    expect(resolveEcccSiteId({ agencyId: "miway" }).siteId).toBe("on-24");
+    expect(resolveEcccSiteId({ agencyId: "brampton" }).siteId).toBe("on-4");
+    expect(resolveEcccSiteId({ agencyId: "yrt" }).siteId).toBe("on-59");
+    expect(resolveEcccSiteId({ agencyId: "drt" }).siteId).toBe("on-117");
+    expect(resolveEcccSiteId({ agencyId: "oakville" }).siteId).toBe("on-79");
+    expect(resolveEcccSiteId({ agencyId: "milton" }).siteId).toBe("on-79");
+    expect(resolveEcccSiteId({ agencyId: "hsr" }).siteId).toBe("on-77");
+    expect(resolveEcccSiteId({ agencyId: "grt" }).siteId).toBe("on-82");
+    expect(resolveEcccSiteId({ agencyId: "ontarionorthland" }).siteId).toBe("on-139");
+  });
+
+  it("estimates Ontario One Fare & GO co-fare savings and evaluates live transfer connection risk", () => {
+    // MiWay -> TTC: second leg is free under Ontario One Fare
+    const miwayTtc = estimateOntarioTripFare([
+      { agencyId: "miway", distanceMeters: 8000 },
+      { agencyId: "ttc", distanceMeters: 10000 },
+    ]);
+    expect(miwayTtc.oneFareApplied).toBe(true);
+    expect(miwayTtc.programLabel).toBe("Ontario One Fare");
+    expect(miwayTtc.totalCad).toBe(3.3);
+    expect(miwayTtc.savingsCad).toBe(3.3);
+
+    // 2-transfer Guelph -> GO -> TTC: both Guelph (GO co-fare) and TTC (One Fare) are $0!
+    const guelphGoTtc = estimateOntarioTripFare([
+      { agencyId: "guelph", distanceMeters: 4000 },
+      { agencyId: "go", routeShortName: "KI", distanceMeters: 78000 },
+      { agencyId: "ttc", distanceMeters: 5000 },
+    ]);
+    expect(guelphGoTtc.oneFareApplied).toBe(true);
+    expect(guelphGoTtc.savingsCad).toBeCloseTo(6.55, 2);
+
+    // Transfer Risk Guard
+    const base = Date.parse("2026-11-24T18:00:00.000Z");
+    const safe = evaluateTransferRisk({
+      fromLegIndex: 0,
+      toLegIndex: 1,
+      leg1ArrivalTime: new Date(base).toISOString(),
+      walkMinutes: 2,
+      leg2DepartureTime: new Date(base + 8 * 60_000).toISOString(),
+    });
+    expect(safe.level).toBe("safe");
+    expect(safe.slackMinutes).toBe(6);
+
+    const tight = evaluateTransferRisk({
+      fromLegIndex: 0,
+      toLegIndex: 1,
+      leg1ArrivalTime: new Date(base).toISOString(),
+      walkMinutes: 3,
+      leg2DepartureTime: new Date(base + 5 * 60_000).toISOString(),
+      leg2UpcomingDepartures: [
+        { departureTime: new Date(base + 5 * 60_000).toISOString() },
+        { departureTime: new Date(base + 18 * 60_000).toISOString() },
+      ],
+    });
+    expect(tight.level).toBe("tight");
+    expect(tight.backupDepartureTime).toBe(new Date(base + 18 * 60_000).toISOString());
+
+    const missed = evaluateTransferRisk({
+      fromLegIndex: 0,
+      toLegIndex: 1,
+      leg1ArrivalTime: new Date(base).toISOString(),
+      leg1DelaySec: 360, // 6 min late!
+      walkMinutes: 2,
+      leg2DepartureTime: new Date(base + 5 * 60_000).toISOString(),
+    });
+    expect(missed.level).toBe("likely_missed");
+  });
+
+  it("matches cross-agency transfer pairs across nearby stops and rail corridors", () => {
+    const originRoutes = new Map([
+      ["miway:109", { agencyId: "miway", routeId: "109", stopId: "mw-sq1" }],
+    ]);
+    const destRoutes = new Map([
+      ["ttc:2", { agencyId: "ttc", routeId: "2", stopId: "ttc-bloor" }],
+    ]);
+
+    const pairs = findCrossAgencyTransferPairs({
+      originRoutes,
+      destRoutes,
+      hubStops: [
+        { agencyId: "miway", stopId: "mw-kipling", name: "Kipling Bus Terminal", lat: 43.6372, lon: -79.5359, routes: ["109", "26"] },
+        { agencyId: "ttc", stopId: "ttc-kipling", name: "Kipling Station", lat: 43.6375, lon: -79.5356, routes: ["2", "44"] },
+      ],
+      maxTransferMeters: 450,
+    });
+
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]!.isCrossAgency).toBe(true);
+    expect(pairs[0]!.agency1).toBe("miway");
+    expect(pairs[0]!.agency2).toBe("ttc");
+    expect(pairs[0]!.transferWalkMeters).toBeLessThan(80);
+
+    // Cross-agency rail-to-rail transfer: Guelph Central GO (GO KI) -> Bloor-Yonge (TTC Line 1) via Union/Bloor
+    const middayMs = Date.parse("2026-11-24T18:15:00.000Z");
+    const railXfers = findRailToRailTransfers({
+      fromLat: 43.5446,
+      fromLon: -80.2465,
+      toLat: 43.6709,
+      toLon: -79.3857,
+      departAtMs: middayMs,
+    });
+    const goToTtc = railXfers.find((x) => x.leg1.corridor.agencyId === "go" && x.leg2.corridor.agencyId === "ttc");
+    expect(goToTtc).toBeDefined();
+    expect(goToTtc!.leg1.corridor.shortName).toBe("KI");
+    expect(goToTtc!.leg2.corridor.agencyId).toBe("ttc");
+  });
+
+  it("tracks stop-by-stop progress purely from rider GPS coordinates and route stops", () => {
+    const stops = [
+      { stopId: "S1", name: "University Centre", lat: 43.5327, lon: -80.2262, stopSequence: 1 },
+      { stopId: "S2", name: "Gordon & Kortright", lat: 43.5220, lon: -80.2190, stopSequence: 2 },
+      { stopId: "S3", name: "Stone Road Mall", lat: 43.5160, lon: -80.2130, stopSequence: 3 },
+      { stopId: "S4", name: "Clairfields", lat: 43.5050, lon: -80.2050, stopSequence: 4 },
+    ];
+
+    // Rider is right at Gordon & Kortright (S2)
+    const atS2 = computeOnBoardRouteProgress({
+      lat: 43.5220,
+      lon: -80.2190,
+      stops,
+    });
+    expect(atS2.stops[0]!.status).toBe("passed");
+    expect(atS2.stops[1]!.status).toBe("current");
+    expect(atS2.stops[1]!.etaMinutes).toBe(0);
+    expect(atS2.stops[2]!.status).toBe("next");
+    expect(atS2.stops[3]!.status).toBe("upcoming");
+    expect(atS2.stops[3]!.etaMinutes).toBeGreaterThan(0);
   });
 });

@@ -164,9 +164,18 @@ export function Layout() {
         ]
       : [
           { id: "go", label: "GO", fullName: "GO Transit", count: 0 },
-          { id: "guelph", label: "Guelph", fullName: "Guelph Transit", count: 0 },
-          { id: "thunderbay", label: "T-Bay", fullName: "Thunder Bay Transit", count: 0 },
           { id: "ttc", label: "TTC", fullName: "Toronto Transit Commission", count: 0 },
+          { id: "miway", label: "MiWay", fullName: "MiWay (Mississauga Transit)", count: 0 },
+          { id: "brampton", label: "Brampton", fullName: "Brampton Transit", count: 0 },
+          { id: "yrt", label: "YRT", fullName: "York Region Transit (YRT)", count: 0 },
+          { id: "drt", label: "DRT", fullName: "Durham Region Transit (DRT)", count: 0 },
+          { id: "oakville", label: "Oakville", fullName: "Oakville Transit", count: 0 },
+          { id: "milton", label: "Milton", fullName: "Milton Transit", count: 0 },
+          { id: "hsr", label: "HSR", fullName: "Hamilton Street Railway (HSR)", count: 0 },
+          { id: "guelph", label: "Guelph", fullName: "Guelph Transit", count: 0 },
+          { id: "grt", label: "GRT", fullName: "Grand River Transit (GRT)", count: 0 },
+          { id: "ontarionorthland", label: "ONTC", fullName: "Ontario Northland", count: 0 },
+          { id: "thunderbay", label: "T-Bay", fullName: "Thunder Bay Transit", count: 0 },
           { id: "all", label: "All", fullName: "All agencies", count: 0 },
         ];
 

@@ -40,6 +40,52 @@ const AGENCIES: AgencySeedSpec[] = [
     feedId: "thunderbay-static",
     url: "http://api.nextlift.ca/gtfs.zip",
   },
+  {
+    id: "miway",
+    feedId: "miway-static",
+    url: "https://www.miapp.ca/GTFS/google_transit.zip",
+  },
+  {
+    id: "milton",
+    feedId: "milton-static",
+    url: "https://metrolinx.tmix.se/gtfs/gtfs-milton.zip",
+  },
+  {
+    id: "ontarionorthland",
+    feedId: "ontarionorthland-static",
+    url: "https://ontarionorthland.tmix.se/gtfs/gtfs.zip",
+  },
+  {
+    id: "grt",
+    feedId: "grt-static",
+    url: "https://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/0",
+    fallbackUrl: "https://webapps.regionofwaterloo.ca/api/grt-routes/api/staticfeeds/1",
+  },
+  {
+    id: "brampton",
+    feedId: "brampton-static",
+    url: "https://www.arcgis.com/sharing/rest/content/items/a355aabd5a8c490186bdce559c9c75fb/data",
+  },
+  {
+    id: "yrt",
+    feedId: "yrt-static",
+    url: "https://www.yrt.ca/google/google_transit.zip",
+  },
+  {
+    id: "oakville",
+    feedId: "oakville-static",
+    url: "https://www.arcgis.com/sharing/rest/content/items/d78a1c1ad6a940009de8b68839a8f606/data",
+  },
+  {
+    id: "hsr",
+    feedId: "hsr-static",
+    url: "https://opendata.hamilton.ca/GTFS-Static/google_transit.zip",
+  },
+  {
+    id: "drt",
+    feedId: "drt-static",
+    url: "https://maps.durham.ca/OpenDataGTFS/GTFS_Durham_TXT.zip",
+  },
 ];
 
 function sqlEsc(val: string | number | null | undefined): string {

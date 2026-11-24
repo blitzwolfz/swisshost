@@ -1,0 +1,63 @@
+{
+  "id": "brampton",
+  "name": "Brampton Transit",
+  "shortName": "Brampton",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-79.7624, 43.7315],
+  "defaultZoom": 11.8,
+  "enabled": true,
+  "attribution": "Data provided by City of Brampton GeoHub Open Data (Brampton Transit / Züm)",
+  "licenseUrl": "https://geohub.brampton.ca/",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "brampton-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://www.arcgis.com/sharing/rest/content/items/a355aabd5a8c490186bdce559c9c75fb/data",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "brampton-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_VehiclePosition.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "brampton-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_TripUpdate.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "brampton-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_Alert.pb",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

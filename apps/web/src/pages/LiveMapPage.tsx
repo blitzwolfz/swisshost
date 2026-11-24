@@ -1,16 +1,25 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertTriangle,
+  ArrowLeftRight,
+  ArrowRight,
   Bell,
   CloudRain,
   Crosshair,
+  Footprints,
   History as HistoryIcon,
   List,
   LocateFixed,
   Navigation,
+  ShieldCheck,
   SlidersHorizontal,
   Star,
+  Ticket,
+  Users,
+  Volume2,
+  X,
 } from "lucide-react";
 import { TransitMap, type MapLabelMode } from "../components/TransitMap";
 import { BottomSheet } from "../components/BottomSheet";
@@ -24,6 +33,7 @@ import {
   formatClock,
   formatCompass,
   formatDelay,
+  formatOccupancy,
   formatRelativeAge,
   formatSpeed,
   formatTemperature,
@@ -34,8 +44,11 @@ import {
   type LiveVehicle,
   type RailCorridorOverlay,
   type StopArrivals,
+  type VehicleMode,
 } from "../lib/api";
 import { agencyName, agencyShortName } from "../lib/agencies";
+import { clearActiveTrip, loadActiveTrip, type ActiveTripSession, type PlanLeg, type RouteAlertItem } from "../lib/activeTrip";
+import { requestStopNotificationPermission, triggerStopAlert, useWakeLock } from "../lib/stopAlert";
 import { usePreferences } from "../lib/preferences";
 import { routeColor, useRouteLookup } from "../lib/routeColors";
 
@@ -54,6 +67,60 @@ interface RideTimeline {
     distanceMeters: number;
     etaMinutes: number | null;
   }>;
+}
+
+interface OnBoardRouteCandidate {
+  agencyId: string;
+  routeId: string;
+  routeShortName: string;
+  routeLongName: string | null;
+  routeColor: string | null;
+  vehicleMode: string;
+  nearestStopId: string | null;
+  nearestStopName: string | null;
+  nearestStopDistanceMeters: number;
+  vehicles: Array<LiveVehicle & { distanceMeters: number }>;
+}
+
+interface OnBoardRouteResponse {
+  agencyId: string;
+  route: {
+    routeId: string;
+    shortName: string;
+    longName: string | null;
+    color: string | null;
+    vehicleMode: string;
+  };
+  trackingBasis: "user_gps" | "vehicle_gps" | "route_start";
+  activeDirectionId: number;
+  activeHeadsign: string | null;
+  directions: Array<{ directionId: number; headsign: string; stopCount: number }>;
+  routeShape: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+  distanceToRouteMeters: number;
+  stops: Array<{
+    stopId: string;
+    stopCode: string | null;
+    name: string;
+    lat: number;
+    lon: number;
+    stopSequence: number;
+    status: "passed" | "current" | "next" | "upcoming";
+    distanceMeters: number;
+    etaMinutes: number | null;
+    wheelchairBoarding?: number;
+  }>;
+  alerts?: RouteAlertItem[];
+  selectedVehicle: LiveVehicle | null;
+  vehiclesOnRoute: Array<LiveVehicle & { distanceMeters: number; onPortion: boolean }>;
+  vehiclesOnPortionCount: number;
+  serverTime: string;
+}
+
+interface OnBoardTarget {
+  agencyId: string;
+  routeId: string;
+  directionId: number | null;
+  vehicleId: string | null;
 }
 
 function useIsDesktop() {
@@ -87,6 +154,7 @@ export default function LiveMapPage() {
   const selectedId = searchParams.get("vehicle") || null;
   const selectedStopId = searchParams.get("stop") || null;
   const stopAgency = searchParams.get("stopAgency") || agencyId;
+  const tripParam = searchParams.get("trip") || null;
 
   const [fleetFilter, setFleetFilter] = useState("");
   const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh" | "stale">("all");
@@ -110,8 +178,49 @@ export default function LiveMapPage() {
   const [followSelected, setFollowSelected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [onBoardMode, setOnBoardMode] = useState(false);
+  const [onBoardTarget, setOnBoardTarget] = useState<OnBoardTarget | null>(null);
+  const [activeTrip, setActiveTrip] = useState<ActiveTripSession | null>(() =>
+    tripParam ? loadActiveTrip(tripParam) : null
+  );
+  const [activeTripLegIdx, setActiveTripLegIdx] = useState(0);
+  const [tripLegVehicles, setTripLegVehicles] = useState<Record<number, string | null>>({});
   const [alertStopId, setAlertStopId] = useState<string | null>(null);
   const { position: userPos, watching, error: gpsError, startWatching, stopWatching } = useUserLocation();
+
+  // Sync planned trip session when URL ?trip=... changes
+  useEffect(() => {
+    if (!tripParam) {
+      setActiveTrip(null);
+      return;
+    }
+    const loaded = loadActiveTrip(tripParam);
+    setActiveTrip(loaded);
+    if (loaded) {
+      setActiveTripLegIdx(0);
+      const tLegs = loaded.option.legs.filter((l) => l.mode === "transit");
+      const initialVehs: Record<number, string | null> = {};
+      tLegs.forEach((leg, i) => {
+        initialVehs[i] = leg.nearestVehicleId ?? leg.upcomingBuses?.[0]?.vehicleId ?? null;
+      });
+      setTripLegVehicles(initialVehs);
+      setOnBoardMode(true);
+      setOnBoardTarget(null);
+      startWatching();
+    }
+  }, [tripParam, startWatching]);
+
+  const tripTransitLegs: PlanLeg[] = useMemo(
+    () => (activeTrip ? activeTrip.option.legs.filter((l) => l.mode === "transit") : []),
+    [activeTrip]
+  );
+  const activeTripLeg: PlanLeg | null = tripTransitLegs[activeTripLegIdx] ?? tripTransitLegs[0] ?? null;
+
+  // Auto-arm get-off bell alert for the active planned trip leg's exit stop
+  useEffect(() => {
+    if (activeTrip && activeTripLeg?.toStopId) {
+      setAlertStopId(activeTripLeg.toStopId);
+    }
+  }, [activeTrip?.id, activeTripLegIdx, activeTripLeg?.toStopId]);
 
   const { data: agenciesData } = useQuery({
     queryKey: ["agencies"],
@@ -126,7 +235,8 @@ export default function LiveMapPage() {
     queryFn: () =>
       apiJson<{
         route: { shapeGeoJson: { type: "LineString"; coordinates: Array<[number, number]> } | null };
-        stops: Array<{ stop_id: string; name: string; lat: number; lon: number }>;
+        stops: Array<{ stop_id: string; name: string; lat: number; lon: number; wheelchair_boarding?: number }>;
+        alerts?: Array<{ id: string; effect?: string | null; header_text: string; description_text?: string }>;
       }>(`/api/v1/agencies/${agencyId}/routes/${encodeURIComponent(routeFilter)}`),
     enabled: agencyId !== "all" && Boolean(routeFilter),
     staleTime: 120_000,
@@ -252,39 +362,129 @@ export default function LiveMapPage() {
     staleTime: 10_000,
   });
 
-  // When On-Board GPS mode is enabled, auto-detect nearest live vehicle within 120m
-  const { data: nearbyOnBoard } = useQuery({
-    queryKey: ["nearby-onboard", userPos ? Math.round(userPos.lat * 1000) : null, userPos ? Math.round(userPos.lon * 1000) : null],
+  // Location + existing route data: find routes & vehicles near user when choosing On-Board
+  const gpsBucketLat = userPos ? Math.round(userPos.lat * 2000) / 2000 : null;
+  const gpsBucketLon = userPos ? Math.round(userPos.lon * 2000) / 2000 : null;
+
+  const { data: onBoardCandidatesData, isLoading: candidatesLoading } = useQuery({
+    queryKey: ["onboard-candidates", gpsBucketLat, gpsBucketLon],
     queryFn: () =>
-      apiJson<{ nearbyVehicles: Array<LiveVehicle & { distanceMeters: number }> }>(
-        `/api/v1/nearby?lat=${userPos!.lat}&lon=${userPos!.lon}&radius=800`
+      apiJson<{ candidates: OnBoardRouteCandidate[] }>(
+        `/api/v1/onboard/candidates?lat=${userPos!.lat}&lon=${userPos!.lon}&radius=700`
       ),
-    enabled: onBoardMode && Boolean(userPos),
+    enabled: onBoardMode && !onBoardTarget && !activeTrip && Boolean(userPos),
     refetchInterval: 15_000,
   });
 
-  useEffect(() => {
-    if (!onBoardMode || selectedId || !nearbyOnBoard?.nearbyVehicles.length) return;
-    const closest = nearbyOnBoard.nearbyVehicles[0]!;
-    if (closest.distanceMeters <= 120) {
-      const next = new URLSearchParams(searchParams);
-      next.set("vehicle", closest.vehicleId);
-      setSearchParams(next, { replace: true });
-      setFollowSelected(true);
+  // Focused On-Board route spec (either from Planned Trip active leg OR selected On-Board route)
+  const focusedRouteSpec = useMemo(() => {
+    if (activeTrip && activeTripLeg?.agencyId && activeTripLeg.routeId) {
+      return {
+        agencyId: activeTripLeg.agencyId,
+        routeId: activeTripLeg.routeId,
+        directionId: null as number | null,
+        vehicleId: tripLegVehicles[activeTripLegIdx] ?? null,
+        fromStopId: activeTripLeg.fromStopId ?? null,
+        toStopId: activeTripLeg.toStopId ?? null,
+      };
     }
-  }, [onBoardMode, selectedId, nearbyOnBoard]);
+    if (onBoardMode && onBoardTarget) {
+      return {
+        agencyId: onBoardTarget.agencyId,
+        routeId: onBoardTarget.routeId,
+        directionId: onBoardTarget.directionId,
+        vehicleId: onBoardTarget.vehicleId,
+        fromStopId: null,
+        toStopId: null,
+      };
+    }
+    return null;
+  }, [activeTrip, activeTripLeg, activeTripLegIdx, tripLegVehicles, onBoardMode, onBoardTarget]);
+
+  const { data: onBoardRouteData, isLoading: onBoardRouteLoading } = useQuery({
+    queryKey: [
+      "onboard-route",
+      focusedRouteSpec?.agencyId,
+      focusedRouteSpec?.routeId,
+      focusedRouteSpec?.directionId,
+      focusedRouteSpec?.vehicleId,
+      focusedRouteSpec?.fromStopId,
+      focusedRouteSpec?.toStopId,
+      gpsBucketLat,
+      gpsBucketLon,
+    ],
+    queryFn: () => {
+      const sp = new URLSearchParams();
+      if (userPos) {
+        sp.set("lat", String(userPos.lat));
+        sp.set("lon", String(userPos.lon));
+        if (userPos.headingDeg !== null) sp.set("heading", String(Math.round(userPos.headingDeg)));
+        if (userPos.speedMps !== null) sp.set("speed", String(userPos.speedMps.toFixed(1)));
+      }
+      if (focusedRouteSpec!.directionId !== null) sp.set("direction", String(focusedRouteSpec!.directionId));
+      if (focusedRouteSpec!.vehicleId) sp.set("vehicle", focusedRouteSpec!.vehicleId);
+      if (focusedRouteSpec!.fromStopId) sp.set("fromStop", focusedRouteSpec!.fromStopId);
+      if (focusedRouteSpec!.toStopId) sp.set("toStop", focusedRouteSpec!.toStopId);
+      return apiJson<OnBoardRouteResponse>(
+        `/api/v1/agencies/${encodeURIComponent(focusedRouteSpec!.agencyId)}/routes/${encodeURIComponent(
+          focusedRouteSpec!.routeId
+        )}/onboard?${sp.toString()}`
+      );
+    },
+    enabled: Boolean(focusedRouteSpec),
+    refetchInterval: 15_000,
+    staleTime: 6_000,
+  });
+
+  const isFocusedOnBoard = Boolean(focusedRouteSpec);
 
   const activeVehicle = rideData?.vehicle ?? selectedVehicle;
   const upcomingStops = (rideData?.stops ?? []).filter((s) => s.status !== "passed");
-  const effectiveRouteShape = rideData?.routeShape ?? routeDetail?.route.shapeGeoJson ?? null;
-  const shapeRouteId = activeVehicle?.routeId ?? routeFilter;
-  const shapeColor = effectiveRouteShape
-    ? activeVehicle
-      ? routeColor(activeVehicle.agencyId, activeVehicle.routeId, activeVehicle.routeColor)
-      : routes.color(shapeRouteId)
-    : null;
+
+  // Stops along the focused On-Board route or active planned trip leg
+  const focusedStops = useMemo(() => {
+    const raw = onBoardRouteData?.stops ?? [];
+    if (!activeTrip || !activeTripLeg?.fromStopId || !activeTripLeg.toStopId || raw.length === 0) {
+      return raw;
+    }
+    const fi = raw.findIndex((s) => s.stopId === activeTripLeg.fromStopId);
+    const ti = raw.findIndex((s) => s.stopId === activeTripLeg.toStopId);
+    if (fi !== -1 && ti !== -1 && fi < ti) {
+      return raw.slice(fi, ti + 1);
+    }
+    return raw;
+  }, [onBoardRouteData, activeTrip, activeTripLeg]);
+
+  const focusedUpcomingStops = useMemo(
+    () => focusedStops.filter((s) => s.status !== "passed"),
+    [focusedStops]
+  );
+
+  // When in focused On-Board / Planned Trip mode, show ONLY that route's shape, stops, and vehicle(s) — nothing else!
+  const effectiveRouteShape = isFocusedOnBoard
+    ? (onBoardRouteData?.routeShape ?? null)
+    : (rideData?.routeShape ?? routeDetail?.route.shapeGeoJson ?? null);
+
+  const shapeRouteId = isFocusedOnBoard
+    ? (focusedRouteSpec?.routeId ?? "")
+    : (activeVehicle?.routeId ?? routeFilter);
+
+  const shapeColor = isFocusedOnBoard
+    ? routeColor(
+        focusedRouteSpec!.agencyId,
+        onBoardRouteData?.route.shortName ?? focusedRouteSpec!.routeId,
+        onBoardRouteData?.route.color ?? activeTripLeg?.routeColor
+      )
+    : effectiveRouteShape
+      ? activeVehicle
+        ? routeColor(activeVehicle.agencyId, activeVehicle.routeId, activeVehicle.routeColor)
+        : routes.color(shapeRouteId)
+      : null;
 
   const effectiveStops = useMemo(() => {
+    if (isFocusedOnBoard) {
+      return focusedStops.map((s) => ({ stop_id: s.stopId, name: s.name, lat: s.lat, lon: s.lon }));
+    }
     const base = rideData?.stops.length
       ? rideData.stops.map((s) => ({ stop_id: s.stopId, name: s.name, lat: s.lat, lon: s.lon }))
       : (routeDetail?.stops ?? []);
@@ -294,27 +494,111 @@ export default function LiveMapPage() {
       return [...base, { stop_id: s.stop_id, name: s.name, lat: s.lat, lon: s.lon }];
     }
     return base;
-  }, [rideData, routeDetail, stopData]);
+  }, [isFocusedOnBoard, focusedStops, rideData, routeDetail, stopData]);
 
-  // Trigger haptic alert when the selected get-off stop is next or current
+  // Vehicles shown on the map: strictly scoped to the active route/vehicle when On-Board or in a Planned Trip!
+  const mapVehicles = useMemo(() => {
+    if (!isFocusedOnBoard) return filteredVehicles;
+    if (!onBoardRouteData) return [];
+    if (focusedRouteSpec?.vehicleId) {
+      const chosen = onBoardRouteData.vehiclesOnRoute.find((v) => v.vehicleId === focusedRouteSpec.vehicleId);
+      if (chosen) return [chosen];
+    }
+    const onPortion = onBoardRouteData.vehiclesOnRoute.filter((v) => v.onPortion);
+    return onPortion.length > 0 ? onPortion : onBoardRouteData.vehiclesOnRoute.slice(0, 6);
+  }, [isFocusedOnBoard, filteredVehicles, onBoardRouteData, focusedRouteSpec?.vehicleId]);
+
+  const mapRailCorridors = useMemo(() => {
+    if (isFocusedOnBoard) return [];
+    return visibleRailCorridors;
+  }, [isFocusedOnBoard, visibleRailCorridors]);
+
+  const tripWalkSegments = useMemo(() => {
+    if (!activeTrip) return [];
+    return activeTrip.option.legs
+      .filter(
+        (l) =>
+          l.mode === "walk" &&
+          l.fromLat !== undefined &&
+          l.fromLon !== undefined &&
+          l.toLat !== undefined &&
+          l.toLon !== undefined
+      )
+      .map((l) => [
+        [l.fromLon!, l.fromLat!] as [number, number],
+        [l.toLon!, l.toLat!] as [number, number],
+      ]);
+  }, [activeTrip]);
+
+  const tripMarkers = useMemo(() => {
+    if (!activeTrip) return [];
+    const out: Array<{ lat: number; lon: number; label: string; accent?: boolean }> = [
+      { lat: activeTrip.originLat, lon: activeTrip.originLon, label: "Start" },
+      { lat: activeTrip.destLat, lon: activeTrip.destLon, label: "Destination", accent: true },
+    ];
+    if (activeTripLeg?.fromLat !== undefined && activeTripLeg.fromLon !== undefined) {
+      out.push({
+        lat: activeTripLeg.fromLat,
+        lon: activeTripLeg.fromLon,
+        label: `Board: ${activeTripLeg.fromName}`,
+      });
+    }
+    if (activeTripLeg?.toLat !== undefined && activeTripLeg.toLon !== undefined) {
+      const isTransfer = activeTripLegIdx < tripTransitLegs.length - 1;
+      out.push({
+        lat: activeTripLeg.toLat,
+        lon: activeTripLeg.toLon,
+        label: `${isTransfer ? "Transfer" : "Exit"}: ${activeTripLeg.toName}`,
+        accent: true,
+      });
+    }
+    return out;
+  }, [activeTrip, activeTripLeg, activeTripLegIdx, tripTransitLegs.length]);
+
+  // Keep phone screen awake while actively riding On-Board or in a Planned Trip window
+  const { awake: screenAwake } = useWakeLock(isFocusedOnBoard);
+  const firedAlertKeyRef = useRef<string | null>(null);
+  const [triggeredStopBanner, setTriggeredStopBanner] = useState<string | null>(null);
+
+  const toggleStopBell = (stopId: string) => {
+    if (alertStopId === stopId) {
+      setAlertStopId(null);
+      setTriggeredStopBanner(null);
+      firedAlertKeyRef.current = null;
+    } else {
+      setAlertStopId(stopId);
+      setTriggeredStopBanner(null);
+      firedAlertKeyRef.current = null;
+      void requestStopNotificationPermission();
+    }
+  };
+
+  // Trigger audio chime + haptic vibration + browser notification when armed stop is next or current
   useEffect(() => {
-    if (!alertStopId || !rideData?.stops.length) return;
-    const target = rideData.stops.find((s) => s.stopId === alertStopId);
+    const stopsSource = isFocusedOnBoard ? focusedStops : (rideData?.stops ?? []);
+    if (!alertStopId || !stopsSource.length) return;
+    const target = stopsSource.find((s) => s.stopId === alertStopId);
     if (target && (target.status === "next" || target.status === "current")) {
-      if ("vibrate" in navigator) {
-        try {
-          navigator.vibrate([220, 100, 220]);
-        } catch {
-          // ignore
-        }
+      const fireKey = `${alertStopId}:${target.status}`;
+      if (firedAlertKeyRef.current !== fireKey) {
+        firedAlertKeyRef.current = fireKey;
+        const routeLabel = isFocusedOnBoard
+          ? (onBoardRouteData?.route.shortName ?? activeTripLeg?.routeShortName ?? undefined)
+          : (activeVehicle?.routeShortName ?? activeVehicle?.routeId ?? undefined);
+        triggerStopAlert({ stopName: target.name, status: target.status, routeLabel });
+        setTriggeredStopBanner(
+          target.status === "current"
+            ? `Arriving now at ${target.name} — exit here.`
+            : `Next stop is ${target.name} — get ready to exit.`
+        );
       }
     }
-  }, [alertStopId, rideData]);
+  }, [alertStopId, isFocusedOnBoard, focusedStops, rideData, onBoardRouteData, activeTripLeg, activeVehicle]);
 
-  // Clear stop alert when switching vehicles
+  // Clear stop alert when switching non-trip vehicles
   useEffect(() => {
-    setAlertStopId(null);
-  }, [selectedId]);
+    if (!activeTrip) setAlertStopId(null);
+  }, [selectedId, activeTrip]);
 
   const setParams = (changes: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
@@ -334,13 +618,37 @@ export default function LiveMapPage() {
       vehicle: null,
     });
 
+  const exitOnBoardAndTrip = () => {
+    setOnBoardMode(false);
+    setOnBoardTarget(null);
+    setActiveTrip(null);
+    clearActiveTrip();
+    stopWatching();
+    if (tripParam) setParam("trip", null);
+  };
+
   const toggleOnBoard = () => {
-    if (onBoardMode) {
-      setOnBoardMode(false);
-      stopWatching();
+    if (onBoardMode || activeTrip) {
+      exitOnBoardAndTrip();
     } else {
       setOnBoardMode(true);
       startWatching();
+      if (activeVehicle?.routeId) {
+        setOnBoardTarget({
+          agencyId: activeVehicle.agencyId,
+          routeId: activeVehicle.routeId,
+          directionId: activeVehicle.directionId,
+          vehicleId: activeVehicle.vehicleId,
+        });
+        selectVehicle(null);
+      } else if (routeFilter && agencyId !== "all") {
+        setOnBoardTarget({
+          agencyId,
+          routeId: routeFilter,
+          directionId: null,
+          vehicleId: null,
+        });
+      }
     }
   };
 
@@ -398,13 +706,19 @@ export default function LiveMapPage() {
           { id: "streetcar", label: "Streetcar" },
           { id: "bus", label: "Bus" },
         ]
-      : agencyId === "go" || agencyId === "all"
+      : agencyId === "grt"
         ? [
             { id: "all", label: "All" },
-            { id: "trains", label: "Trains" },
-            { id: "bus", label: "Buses" },
+            { id: "streetcar", label: "ION LRT" },
+            { id: "bus", label: "Bus" },
           ]
-        : [];
+        : agencyId === "go" || agencyId === "ontarionorthland" || agencyId === "all"
+          ? [
+              { id: "all", label: "All" },
+              { id: "trains", label: "Trains" },
+              { id: "bus", label: "Buses" },
+            ]
+          : [];
 
   const modeSwitcher =
     modeOptions.length > 0 ? (
@@ -475,35 +789,53 @@ export default function LiveMapPage() {
     <>
       <WeatherAlertBanner weather={weatherData} compact />
 
+      {triggeredStopBanner && (
+        <div
+          className="p-3 text-sm font-bold flex items-center justify-between gap-2"
+          style={{ background: "var(--accent)", color: "var(--on-accent)" }}
+          role="alert"
+        >
+          <span className="inline-flex items-center gap-2">
+            <Volume2 size={16} aria-hidden="true" className="shrink-0" />
+            {triggeredStopBanner}
+          </span>
+          <button
+            type="button"
+            className="bg-transparent border-0 p-1 cursor-pointer"
+            style={{ color: "inherit" }}
+            aria-label="Dismiss stop alert"
+            onClick={() => setTriggeredStopBanner(null)}
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      {!isFocusedOnBoard && routeFilter && routeDetail?.alerts && routeDetail.alerts.length > 0 && (
+        <div
+          className="p-2.5 text-xs space-y-1"
+          style={{ borderLeft: "3px solid var(--danger)", background: "var(--paper-raised)" }}
+          role="alert"
+        >
+          {routeDetail.alerts.slice(0, 2).map((al) => (
+            <div key={al.id} className="flex items-start gap-1.5">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} aria-hidden="true" />
+              <span>
+                <strong>{al.effect ? `${al.effect.replace(/_/g, " ")}: ` : "Service alert: "}</strong>
+                {al.header_text}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {gpsError && (
         <p className="m-0 text-sm font-bold" style={{ color: "var(--danger)" }} role="alert">
           {gpsError}
         </p>
       )}
 
-      {onBoardMode && watching && !activeVehicle && (
-        <div className="text-sm flex items-center justify-between gap-2" role="status">
-          <span>
-            {nearbyOnBoard?.nearbyVehicles.length
-              ? `Nearest: route ${nearbyOnBoard.nearbyVehicles[0]!.routeShortName ?? nearbyOnBoard.nearbyVehicles[0]!.routeId ?? "none"}, ${noun.toLowerCase()} ${nearbyOnBoard.nearbyVehicles[0]!.fleetNumber}, ${nearbyOnBoard.nearbyVehicles[0]!.distanceMeters} m away.`
-              : "Tracking your location to find the vehicle you are on."}
-          </span>
-          {nearbyOnBoard?.nearbyVehicles[0] && (
-            <button
-              type="button"
-              className="sh-btn"
-              onClick={() => {
-                selectVehicle(nearbyOnBoard.nearbyVehicles[0]!.vehicleId);
-                setFollowSelected(true);
-              }}
-            >
-              Select
-            </button>
-          )}
-        </div>
-      )}
-
-      {activeAgency?.liveStatus === "missing_key" && (
+      {activeAgency?.liveStatus === "missing_key" && !isFocusedOnBoard && (
         <p className="m-0 text-sm">
           <strong>{activeAgency.name}</strong> train positions are calculated from the rail schedule &amp; speed model while{" "}
           <code>GO_TRANSIT_API_KEY</code> is pending. Live GPS trains &amp; buses activate automatically once set.{" "}
@@ -811,6 +1143,25 @@ export default function LiveMapPage() {
         </div>
       </dl>
 
+      {(() => {
+        const occ = formatOccupancy(activeVehicle.occupancyStatus);
+        if (!occ) return null;
+        return (
+          <div className="flex items-center gap-2 text-xs">
+            <span
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 font-bold"
+              style={{
+                border: "1px solid var(--rule)",
+                color: occ.tone === "err" ? "var(--danger)" : occ.tone === "warn" ? "var(--accent)" : "var(--ink)",
+              }}
+            >
+              <Users size={13} aria-hidden="true" />
+              Crowding: {occ.label}
+            </span>
+          </div>
+        );
+      })()}
+
       {upcomingStops.length > 0 && (
         <div>
           <h3 className="m-0 text-base font-bold">Upcoming stops</h3>
@@ -841,7 +1192,7 @@ export default function LiveMapPage() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setAlertStopId(isAlert ? null : s.stopId)}
+                      onClick={() => toggleStopBell(s.stopId)}
                       aria-pressed={isAlert}
                       aria-label={isAlert ? `Cancel alert for ${s.name}` : `Alert before ${s.name}`}
                       className="sh-btn sh-btn-icon sh-btn-quiet"
@@ -921,28 +1272,618 @@ export default function LiveMapPage() {
     </section>
   ) : null;
 
+  /* ---------- On-Board Mode & Planned Trip On-Board Window ---------- */
+
+  const handleSelectFocusedVehicle = (vehicleId: string | null) => {
+    if (activeTrip) {
+      setTripLegVehicles((prev) => ({ ...prev, [activeTripLegIdx]: vehicleId }));
+    } else if (onBoardTarget) {
+      setOnBoardTarget((prev) => (prev ? { ...prev, vehicleId } : prev));
+    }
+    if (vehicleId) setFollowSelected(true);
+  };
+
+  const onBoardPanel =
+    activeTrip || onBoardMode ? (
+      <section aria-label={activeTrip ? "Active trip on-board window" : "On-board route tracker"} className="space-y-3">
+        {/* Planned Trip Header + Leg Switcher */}
+        {activeTrip && (
+          <div className="space-y-2 pb-3" style={{ borderBottom: "var(--border-w) solid var(--line)" }}>
+            <div className="flex items-start justify-between gap-2 pr-10 lg:pr-0">
+              <div className="min-w-0">
+                <div className="text-xs font-bold sh-muted">
+                  Active trip · {(activeTrip.option.agencies ?? [activeTrip.option.agencyId]).map(agencyShortName).join(" → ")}
+                </div>
+                <h2 className="m-0 text-lg font-extrabold leading-tight truncate">
+                  {activeTrip.originLabel} → {activeTrip.destLabel}
+                </h2>
+                <div className="text-xs sh-muted tabular-nums mt-0.5">
+                  {activeTrip.option.totalMinutes} min · {formatClock(activeTrip.option.leaveAt)} →{" "}
+                  {formatClock(activeTrip.option.arriveAt)}
+                </div>
+                {activeTrip.option.fareEstimate && (
+                  <div
+                    className="inline-flex items-center gap-1 text-xs font-bold mt-1"
+                    style={{ color: activeTrip.option.fareEstimate.oneFareApplied ? "var(--accent)" : "var(--ink)" }}
+                  >
+                    <Ticket size={13} aria-hidden="true" />
+                    {activeTrip.option.fareEstimate.summary}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="sh-btn sh-btn-icon shrink-0"
+                aria-label="Exit active trip"
+                title="Exit active trip"
+                onClick={exitOnBoardAndTrip}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            {tripTransitLegs.length > 1 && (
+              <div role="tablist" aria-label="Trip transit legs" className="sh-seg w-full">
+                {tripTransitLegs.map((leg, idx) => (
+                  <button
+                    key={`${leg.agencyId}-${leg.routeId}-${idx}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTripLegIdx === idx}
+                    aria-pressed={activeTripLegIdx === idx}
+                    onClick={() => setActiveTripLegIdx(idx)}
+                    className="text-xs"
+                    style={{ minHeight: 38, padding: "0 0.5rem" }}
+                  >
+                    Leg {idx + 1}: {agencyShortName(leg.agencyId ?? activeTrip.option.agencyId)} {leg.routeShortName}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Walk / transfer hints around the active leg */}
+            {activeTripLeg && (
+              <div className="text-xs sh-muted space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <Footprints size={13} aria-hidden="true" className="shrink-0" />
+                  <span>
+                    Board at <strong style={{ color: "var(--ink)" }}>{activeTripLeg.fromName}</strong>
+                    {activeTripLeg.departureTime ? ` (${formatClock(activeTripLeg.departureTime)})` : ""} → Exit at{" "}
+                    <strong style={{ color: "var(--ink)" }}>{activeTripLeg.toName}</strong>
+                    {activeTripLeg.arrivalTime ? ` (${formatClock(activeTripLeg.arrivalTime)})` : ""}
+                  </span>
+                </div>
+                {activeTripLegIdx < tripTransitLegs.length - 1 && (
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 font-bold" style={{ color: "var(--accent)" }}>
+                      <ArrowRight size={13} aria-hidden="true" className="shrink-0" />
+                      <span>
+                        Transfer next to {agencyShortName(tripTransitLegs[activeTripLegIdx + 1]!.agencyId ?? "")} Route{" "}
+                        {tripTransitLegs[activeTripLegIdx + 1]!.routeShortName}
+                      </span>
+                    </div>
+                    {activeTrip.option.transferRisks?.[activeTripLegIdx] &&
+                      (() => {
+                        const risk = activeTrip.option.transferRisks![activeTripLegIdx]!;
+                        return (
+                          <div
+                            className="inline-flex items-center gap-1.5 font-bold"
+                            style={{
+                              color:
+                                risk.level === "likely_missed"
+                                  ? "var(--danger)"
+                                  : risk.level === "tight"
+                                    ? "var(--accent)"
+                                    : "var(--ink-soft)",
+                            }}
+                          >
+                            {risk.level === "safe" ? (
+                              <ShieldCheck size={13} aria-hidden="true" />
+                            ) : (
+                              <AlertTriangle size={13} aria-hidden="true" />
+                            )}
+                            <span>
+                              {risk.message}
+                              {risk.level !== "safe" && risk.backupDepartureTime
+                                ? ` · Next backup ${formatClock(risk.backupDepartureTime)}`
+                                : ""}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* CASE 1: Focused on a specific route (either On-Board Route or Active Planned Trip Leg) */}
+        {focusedRouteSpec ? (
+          <>
+            <div className="flex items-start justify-between gap-2 pr-10 lg:pr-0">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <RouteBadge
+                  size="lg"
+                  label={onBoardRouteData?.route.shortName ?? activeTripLeg?.routeShortName ?? focusedRouteSpec.routeId}
+                  color={shapeColor ?? "#1D3E8A"}
+                />
+                <div className="min-w-0">
+                  <h3 className="m-0 text-lg font-extrabold leading-tight truncate">
+                    {onBoardRouteData?.activeHeadsign ??
+                      activeTripLeg?.nearestHeadsign ??
+                      onBoardRouteData?.route.longName ??
+                      `Route ${focusedRouteSpec.routeId}`}
+                  </h3>
+                  <p className="m-0 text-xs sh-muted">
+                    {agencyShortName(focusedRouteSpec.agencyId)} ·{" "}
+                    {userPos ? (
+                      <span className="sh-live">Tracked by your GPS</span>
+                    ) : onBoardRouteData?.selectedVehicle ? (
+                      <span>Tracked via #{onBoardRouteData.selectedVehicle.fleetNumber}</span>
+                    ) : (
+                      <span>Route view (waiting for GPS)</span>
+                    )}
+                    {onBoardRouteData?.selectedVehicle && userPos
+                      ? ` · ${vehicleModeNoun(onBoardRouteData.selectedVehicle.vehicleMode, "Bus")} #${onBoardRouteData.selectedVehicle.fleetNumber}`
+                      : ""}
+                    {screenAwake ? " · Screen awake" : ""}
+                  </p>
+                </div>
+              </div>
+              {!activeTrip && (
+                <button
+                  type="button"
+                  className="sh-btn sh-btn-icon shrink-0"
+                  aria-label="Exit on-board mode"
+                  title="Exit on-board mode"
+                  onClick={exitOnBoardAndTrip}
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+
+            {/* Active Route Detours & Service Alerts */}
+            {onBoardRouteData?.alerts && onBoardRouteData.alerts.length > 0 && (
+              <div
+                className="p-2.5 text-xs space-y-1"
+                style={{ borderLeft: "3px solid var(--danger)", background: "var(--paper-raised)" }}
+                role="alert"
+              >
+                {onBoardRouteData.alerts.slice(0, 2).map((al) => (
+                  <div key={al.id} className="flex items-start gap-1.5">
+                    <AlertTriangle size={13} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} aria-hidden="true" />
+                    <span>
+                      <strong>{al.effect ? `${al.effect.replace(/_/g, " ")}: ` : "Alert: "}</strong>
+                      {al.headerText}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Direction flip & route-picker controls */}
+            {!activeTrip && (
+              <div className="flex flex-wrap items-center gap-2">
+                {onBoardRouteData && onBoardRouteData.directions.length > 1 && (
+                  <button
+                    type="button"
+                    className="sh-btn text-xs"
+                    onClick={() => {
+                      const dirs = onBoardRouteData.directions;
+                      const currIdx = dirs.findIndex((d) => d.directionId === onBoardRouteData.activeDirectionId);
+                      const nextDir = dirs[(currIdx + 1) % dirs.length]!;
+                      setOnBoardTarget((prev) => (prev ? { ...prev, directionId: nextDir.directionId } : prev));
+                    }}
+                  >
+                    <ArrowLeftRight size={14} aria-hidden="true" /> Flip direction
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="sh-btn text-xs"
+                  onClick={() => setOnBoardTarget(null)}
+                >
+                  Change route
+                </button>
+                <button
+                  type="button"
+                  className="sh-btn text-xs"
+                  onClick={exitOnBoardAndTrip}
+                >
+                  Exit on board
+                </button>
+              </div>
+            )}
+
+            {/* Multi-vehicle selector when 1+ vehicles (especially multiple!) are on this portion of the route */}
+            {onBoardRouteData && onBoardRouteData.vehiclesOnRoute.length > 0 && (
+              <div className="p-2.5 space-y-2 sh-surface">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <strong className="font-bold">
+                    {onBoardRouteData.vehiclesOnPortionCount > 1
+                      ? `${onBoardRouteData.vehiclesOnPortionCount} vehicles on this portion — select yours:`
+                      : onBoardRouteData.vehiclesOnPortionCount === 1
+                        ? "Vehicle on this portion:"
+                        : `Vehicles on Route ${onBoardRouteData.route.shortName}:`}
+                  </strong>
+                  {focusedRouteSpec.vehicleId && (
+                    <button
+                      type="button"
+                      className="bg-transparent border-0 p-0 underline cursor-pointer text-xs"
+                      style={{ color: "var(--accent)", font: "inherit" }}
+                      onClick={() => handleSelectFocusedVehicle(null)}
+                    >
+                      GPS only
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {onBoardRouteData.vehiclesOnRoute.slice(0, 6).map((v) => {
+                    const isPicked = focusedRouteSpec.vehicleId === v.vehicleId;
+                    const vNoun = vehicleModeNoun(v.vehicleMode, "Bus");
+                    const occ = formatOccupancy(v.occupancyStatus);
+                    return (
+                      <button
+                        key={v.vehicleId}
+                        type="button"
+                        aria-pressed={isPicked}
+                        onClick={() => handleSelectFocusedVehicle(isPicked ? null : v.vehicleId)}
+                        className={`sh-btn text-xs ${isPicked ? "sh-btn-primary" : ""}`}
+                        style={{ minHeight: 34, padding: "0 0.55rem" }}
+                      >
+                        <span className="tabular-nums font-bold">
+                          {vNoun} #{v.fleetNumber}
+                        </span>
+                        <span className="tabular-nums opacity-85">
+                          · {v.distanceMeters < 1000 ? `${v.distanceMeters}m` : `${(v.distanceMeters / 1000).toFixed(1)}km`}
+                        </span>
+                        {occ ? <span className="opacity-85">· {occ.short}</span> : null}
+                        {v.headsign ? <span className="truncate max-w-[100px]">· {v.headsign}</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Next stop highlight */}
+            {focusedUpcomingStops.length > 0 ? (
+              <div
+                className="py-2 flex items-center justify-between gap-2"
+                style={{ borderTop: "var(--border-w) solid var(--line)", borderBottom: "1px solid var(--rule)" }}
+              >
+                <div className="min-w-0">
+                  <div className="text-xs sh-muted">
+                    {focusedUpcomingStops[0]!.status === "current" ? "Current stop" : "Next stop"} ·{" "}
+                    {focusedUpcomingStops.length} {focusedUpcomingStops.length === 1 ? "stop" : "stops"} left
+                  </div>
+                  <div className="font-extrabold truncate">{focusedUpcomingStops[0]!.name}</div>
+                </div>
+                {focusedUpcomingStops[0]!.etaMinutes !== null && (
+                  <span className="shrink-0 text-xl font-extrabold tabular-nums">
+                    {focusedUpcomingStops[0]!.etaMinutes === 0 ? "Here" : `${focusedUpcomingStops[0]!.etaMinutes} min`}
+                  </span>
+                )}
+              </div>
+            ) : onBoardRouteLoading ? (
+              <p className="m-0 text-sm sh-muted">Loading route stops &amp; live positions…</p>
+            ) : (
+              <p className="m-0 text-sm sh-muted">
+                Route shape loaded. Stop sequence will appear once static schedules are synced for{" "}
+                {agencyShortName(focusedRouteSpec.agencyId)}.
+              </p>
+            )}
+
+            {/* Stop-by-stop timeline with vibration bell */}
+            {focusedUpcomingStops.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="m-0 text-sm font-bold">Upcoming stops</h4>
+                  <span className="text-xs sh-muted">Tap bell for stop alert</span>
+                </div>
+                <ul className="list-none m-0 p-0 mt-1">
+                  {focusedUpcomingStops.slice(0, 16).map((s) => {
+                    const isAlert = alertStopId === s.stopId;
+                    const isCurrentOrNext = s.status === "current" || s.status === "next";
+                    const isExitStop = activeTripLeg?.toStopId === s.stopId;
+                    return (
+                      <li
+                        key={`${s.stopId}-${s.stopSequence}`}
+                        className="flex items-center justify-between gap-2"
+                        style={{ borderBottom: "1px solid var(--rule)", minHeight: 42 }}
+                      >
+                        <span className={`truncate text-sm ${isCurrentOrNext || isExitStop ? "font-bold" : ""}`}>
+                          {s.name}
+                          {s.wheelchairBoarding === 1 && (
+                            <span className="ml-1 text-xs sh-muted" title="Wheelchair accessible stop" aria-label="Accessible">
+                              ♿
+                            </span>
+                          )}
+                          {isExitStop && (
+                            <span
+                              className="ml-1.5 text-xs font-extrabold"
+                              style={{ color: "var(--accent)" }}
+                            >
+                              {activeTripLegIdx < tripTransitLegs.length - 1 ? "(Transfer)" : "(Exit)"}
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-1 shrink-0">
+                          <span className="tabular-nums text-xs sh-muted">
+                            {s.status === "current"
+                              ? "Here"
+                              : s.etaMinutes !== null
+                                ? `${s.etaMinutes} min`
+                                : `${Math.round(s.distanceMeters)} m`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleStopBell(s.stopId)}
+                            aria-pressed={isAlert}
+                            aria-label={isAlert ? `Cancel alert for ${s.name}` : `Alert before ${s.name}`}
+                            className="sh-btn sh-btn-icon sh-btn-quiet"
+                            style={isAlert ? { color: "var(--accent)" } : undefined}
+                          >
+                            <Bell size={17} aria-hidden="true" fill={isAlert ? "currentColor" : "none"} />
+                          </button>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {activeTrip && (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {activeTripLegIdx < tripTransitLegs.length - 1 && (
+                  <button
+                    type="button"
+                    className="sh-btn sh-btn-primary flex-1 text-xs"
+                    onClick={() => setActiveTripLegIdx((i) => Math.min(tripTransitLegs.length - 1, i + 1))}
+                  >
+                    Next leg: {agencyShortName(tripTransitLegs[activeTripLegIdx + 1]!.agencyId ?? "")}{" "}
+                    {tripTransitLegs[activeTripLegIdx + 1]!.routeShortName} →
+                  </button>
+                )}
+                <Link to="/plan" className="sh-btn text-xs">
+                  Back to planner
+                </Link>
+                <button type="button" className="sh-btn text-xs" onClick={exitOnBoardAndTrip}>
+                  Exit trip
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          /* CASE 2: Choosing which route / vehicle the rider is on board (location + existing route data) */
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-2 pr-10 lg:pr-0">
+              <div>
+                <h2 className="m-0 text-xl font-extrabold leading-tight">On board</h2>
+                <p className="m-0 text-sm sh-muted">
+                  Pick the route or vehicle you are riding. The map will show only that route.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="sh-btn sh-btn-icon shrink-0"
+                aria-label="Exit on-board mode"
+                onClick={exitOnBoardAndTrip}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            {!userPos && !gpsError && (
+              <p className="m-0 text-sm sh-muted">Locating your GPS position to match nearby routes…</p>
+            )}
+
+            {userPos && candidatesLoading && (
+              <p className="m-0 text-sm sh-muted">Matching your location with nearby routes and vehicles…</p>
+            )}
+
+            {userPos && onBoardCandidatesData && onBoardCandidatesData.candidates.length > 0 && (
+              <div className="space-y-2.5">
+                <div className="text-xs font-bold sh-muted">
+                  Routes near your location ({onBoardCandidatesData.candidates.length})
+                </div>
+                <ul className="list-none m-0 p-0 space-y-2">
+                  {onBoardCandidatesData.candidates.slice(0, 10).map((cand) => (
+                    <li
+                      key={`${cand.agencyId}:${cand.routeId}`}
+                      className="p-2.5 space-y-2 sh-surface"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <RouteBadge
+                            size="lg"
+                            label={cand.routeShortName}
+                            color={routeColor(cand.agencyId, cand.routeShortName, cand.routeColor)}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-bold text-sm truncate">
+                              {cand.routeLongName || `Route ${cand.routeShortName}`}
+                            </div>
+                            <div className="text-xs sh-muted truncate">
+                              {agencyShortName(cand.agencyId)}
+                              {cand.nearestStopName ? ` · near ${cand.nearestStopName} (${cand.nearestStopDistanceMeters}m)` : ""}
+                            </div>
+                          </div>
+                        </div>
+                        {cand.vehicles.length <= 1 && (
+                          <button
+                            type="button"
+                            className="sh-btn sh-btn-primary text-xs shrink-0"
+                            style={{ minHeight: 36, padding: "0 0.65rem" }}
+                            onClick={() =>
+                              setOnBoardTarget({
+                                agencyId: cand.agencyId,
+                                routeId: cand.routeId,
+                                directionId: cand.vehicles[0]?.directionId ?? null,
+                                vehicleId: cand.vehicles[0]?.vehicleId ?? null,
+                              })
+                            }
+                          >
+                            Board
+                          </button>
+                        )}
+                      </div>
+
+                      {cand.vehicles.length > 1 ? (
+                        <div className="space-y-1.5 pt-1" style={{ borderTop: "1px solid var(--rule)" }}>
+                          <div className="text-xs sh-muted">
+                            {cand.vehicles.length} vehicles on this portion — select yours:
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {cand.vehicles.slice(0, 5).map((v) => (
+                              <button
+                                key={v.vehicleId}
+                                type="button"
+                                className="sh-btn text-xs"
+                                style={{ minHeight: 34, padding: "0 0.55rem" }}
+                                onClick={() =>
+                                  setOnBoardTarget({
+                                    agencyId: cand.agencyId,
+                                    routeId: cand.routeId,
+                                    directionId: v.directionId,
+                                    vehicleId: v.vehicleId,
+                                  })
+                                }
+                              >
+                                <strong>
+                                  {vehicleModeNoun(v.vehicleMode as VehicleMode, "Bus")} #{v.fleetNumber}
+                                </strong>
+                                <span className="tabular-nums sh-muted">· {v.distanceMeters}m</span>
+                                {v.headsign ? <span className="truncate max-w-[110px]">· {v.headsign}</span> : null}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              className="sh-btn text-xs"
+                              style={{ minHeight: 34, padding: "0 0.55rem" }}
+                              onClick={() =>
+                                setOnBoardTarget({
+                                  agencyId: cand.agencyId,
+                                  routeId: cand.routeId,
+                                  directionId: null,
+                                  vehicleId: null,
+                                })
+                              }
+                            >
+                              Track route by GPS only
+                            </button>
+                          </div>
+                        </div>
+                      ) : cand.vehicles.length === 1 ? (
+                        <div className="text-xs sh-muted">
+                          {vehicleModeNoun(cand.vehicles[0]!.vehicleMode as VehicleMode, "Bus")} #{cand.vehicles[0]!.fleetNumber} ·{" "}
+                          {cand.vehicles[0]!.distanceMeters}m away
+                          {cand.vehicles[0]!.headsign ? ` · towards ${cand.vehicles[0]!.headsign}` : ""}
+                        </div>
+                      ) : (
+                        <div className="text-xs sh-muted">
+                          No live vehicle nearby — tracks your ride using your GPS and route stops.
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {userPos && onBoardCandidatesData && onBoardCandidatesData.candidates.length === 0 && (
+              <p className="m-0 text-sm sh-muted">
+                No transit routes found within 700 m of your current location. You can pick any route below.
+              </p>
+            )}
+
+            {/* Manual route picker fallback (works even indoors or before GPS lock) */}
+            {agencyId !== "all" && routes.routes.length > 0 && (
+              <div className="pt-2 space-y-1.5" style={{ borderTop: "1px solid var(--rule)" }}>
+                <label htmlFor="onboard-manual-route" className="sh-label">
+                  Or pick a {agencyShortName(agencyId)} route directly
+                </label>
+                <select
+                  id="onboard-manual-route"
+                  value=""
+                  onChange={(e) => {
+                    if (!e.target.value) return;
+                    setOnBoardTarget({
+                      agencyId,
+                      routeId: e.target.value,
+                      directionId: null,
+                      vehicleId: null,
+                    });
+                  }}
+                  className="sh-input w-full"
+                >
+                  <option value="">Choose a route…</option>
+                  {routes.routes.map((r) => (
+                    <option key={r.routeId} value={r.routeId}>
+                      {r.shortName}
+                      {r.longName ? `, ${r.longName}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    ) : null;
+
+  const focusedCenter: [number, number] | null = useMemo(() => {
+    if (!isFocusedOnBoard) return null;
+    if (userPos) return [userPos.lon, userPos.lat];
+    if (onBoardRouteData?.selectedVehicle) {
+      return [onBoardRouteData.selectedVehicle.lon, onBoardRouteData.selectedVehicle.lat];
+    }
+    if (activeTripLeg?.fromLon !== undefined && activeTripLeg.fromLat !== undefined) {
+      return [activeTripLeg.fromLon, activeTripLeg.fromLat];
+    }
+    if (focusedStops[0]) return [focusedStops[0].lon, focusedStops[0].lat];
+    return null;
+  }, [isFocusedOnBoard, userPos, onBoardRouteData?.selectedVehicle, activeTripLeg, focusedStops]);
+
   const stopFocus: [number, number] | null =
-    selectedStopId && !activeVehicle && stopData?.stop.lon !== undefined && stopData.stop.lat !== undefined
+    selectedStopId && !activeVehicle && !isFocusedOnBoard && stopData?.stop.lon !== undefined && stopData.stop.lat !== undefined
       ? [stopData.stop.lon, stopData.stop.lat]
       : null;
-  const sheetOpen = !isDesktop && Boolean(activeVehicle || selectedStopId || showFilters || drawerOpen);
+  const sheetOpen = !isDesktop && Boolean(onBoardMode || activeTrip || activeVehicle || selectedStopId || showFilters || drawerOpen);
 
   const map = (
     <TransitMap
-      center={stopFocus ?? (userPos && onBoardMode && !activeVehicle ? [userPos.lon, userPos.lat] : center)}
-      zoom={stopFocus ? 15 : userPos && onBoardMode && !activeVehicle ? 14 : zoom}
+      center={focusedCenter ?? stopFocus ?? (userPos && onBoardMode ? [userPos.lon, userPos.lat] : center)}
+      zoom={focusedCenter ? 14 : stopFocus ? 15 : userPos && onBoardMode ? 14 : zoom}
       bottomInset={sheetOpen ? Math.round(window.innerHeight * 0.4) : 0}
-      vehicles={filteredVehicles}
-      selectedVehicleId={selectedId}
-      onSelectVehicle={(v) => selectVehicle(v.vehicleId)}
+      vehicles={mapVehicles}
+      selectedVehicleId={isFocusedOnBoard ? (focusedRouteSpec?.vehicleId ?? null) : selectedId}
+      onSelectVehicle={(v) => {
+        if (isFocusedOnBoard) {
+          handleSelectFocusedVehicle(v.vehicleId);
+        } else {
+          selectVehicle(v.vehicleId);
+        }
+      }}
       routeShape={effectiveRouteShape}
       routeShapeColor={shapeColor}
-      railCorridors={visibleRailCorridors}
+      railCorridors={mapRailCorridors}
+      walkSegments={tripWalkSegments}
+      tripMarkers={tripMarkers}
       stops={effectiveStops}
-      selectedStopId={selectedStopId}
-      onSelectStop={(s) => selectStop(s)}
+      selectedStopId={isFocusedOnBoard ? (alertStopId ?? null) : selectedStopId}
+      onSelectStop={(s) => {
+        if (isFocusedOnBoard) {
+          setAlertStopId((prev) => (prev === s.stop_id ? null : s.stop_id));
+        } else {
+          selectStop(s);
+        }
+      }}
       userLocation={userPos ? { lat: userPos.lat, lon: userPos.lon } : null}
-      followSelected={followSelected}
+      followSelected={isFocusedOnBoard ? Boolean(focusedRouteSpec?.vehicleId && !userPos) : followSelected}
       labelMode={labelMode}
       showWeatherRadar={showWeatherRadar}
       heightClass="h-full w-full"
@@ -950,7 +1891,23 @@ export default function LiveMapPage() {
     />
   );
 
-  const countChip = (
+  const countChip = isFocusedOnBoard ? (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="sh-chip" role="status" aria-live="polite">
+        <b>{onBoardRouteData?.route.shortName ?? activeTripLeg?.routeShortName ?? focusedRouteSpec?.routeId}</b>
+        <span className="leading-tight">
+          {activeTrip ? `Trip · Leg ${activeTripLegIdx + 1}/${tripTransitLegs.length}` : "On board · route only"}
+          <span className="block text-xs sh-muted">
+            {userPos ? "Live GPS tracking" : `${mapVehicles.length} on route`}
+          </span>
+        </span>
+      </div>
+      <button type="button" className="sh-btn text-xs" style={{ minHeight: 44, background: "var(--paper)" }} onClick={exitOnBoardAndTrip}>
+        <X size={16} aria-hidden="true" />
+        Exit
+      </button>
+    </div>
+  ) : (
     <div className="flex flex-wrap items-center gap-2">
       <div className="sh-chip" role="status" aria-live="polite">
         <b>{liveCount}</b>
@@ -1033,7 +1990,8 @@ export default function LiveMapPage() {
         >
           <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
             {notices}
-            {vehiclePanel ??
+            {onBoardPanel ??
+              vehiclePanel ??
               stopPanel ?? (
                 <section aria-labelledby="live-title" className="space-y-3">
                   <div className="flex items-baseline justify-between gap-2">
@@ -1072,11 +2030,15 @@ export default function LiveMapPage() {
             <button
               type="button"
               className="sh-btn flex-1"
-              aria-pressed={onBoardMode}
+              aria-pressed={onBoardMode || Boolean(activeTrip)}
               onClick={toggleOnBoard}
-              style={onBoardMode ? { background: "var(--accent)", color: "var(--on-accent)", borderColor: "var(--accent)" } : undefined}
+              style={
+                onBoardMode || activeTrip
+                  ? { background: "var(--accent)", color: "var(--on-accent)", borderColor: "var(--accent)" }
+                  : undefined
+              }
             >
-              {onBoardMode ? "Tracking you" : "On board"}
+              {activeTrip ? "Exit trip" : onBoardMode ? "Exit on board" : "On board"}
             </button>
           </div>
         </aside>
@@ -1096,13 +2058,27 @@ export default function LiveMapPage() {
 
   /* ---------- Phone and tablet: map, one control block, bottom sheet ---------- */
 
-  const sheetMode = activeVehicle ? "vehicle" : selectedStopId ? "stop" : showFilters ? "filters" : drawerOpen ? "list" : null;
+  const sheetMode =
+    onBoardMode || activeTrip
+      ? "onboard"
+      : activeVehicle
+        ? "vehicle"
+        : selectedStopId
+          ? "stop"
+          : showFilters
+            ? "filters"
+            : drawerOpen
+              ? "list"
+              : null;
 
   return (
     <div className="sh-map-shell relative w-full flex-1 min-h-[360px] overflow-hidden">
       {map}
 
       <div className="absolute top-2 left-2 right-2 z-20 flex flex-col gap-2 pointer-events-none">
+        {isFocusedOnBoard ? (
+          <div className="pointer-events-auto flex items-center justify-between gap-2">{countChip}</div>
+        ) : (
         <div className="sh-panel pointer-events-auto">
           <div className="flex items-stretch" style={{ borderBottom: "var(--border-w) solid var(--line)" }}>
             <div className="flex items-center gap-2 px-3 shrink-0" role="status" aria-live="polite">
@@ -1128,7 +2104,7 @@ export default function LiveMapPage() {
             </Link>
             <button type="button" aria-pressed={onBoardMode} onClick={toggleOnBoard}>
               <LocateFixed size={20} aria-hidden="true" />
-              {onBoardMode ? "Tracking" : "On board"}
+              {onBoardMode ? "Exit" : "On board"}
             </button>
             <button
               type="button"
@@ -1154,15 +2130,15 @@ export default function LiveMapPage() {
             </button>
           </div>
         </div>
+        )}
 
         {(gpsError ||
-          (onBoardMode && watching && !activeVehicle) ||
-          activeAgency?.liveStatus === "missing_key" ||
-          (showWeather && (weatherData?.alerts.length ?? 0) > 0) ||
-          (nothingReporting && !sheetMode)) && (
+          (activeAgency?.liveStatus === "missing_key" && !isFocusedOnBoard) ||
+          (showWeather && !isFocusedOnBoard && (weatherData?.alerts.length ?? 0) > 0) ||
+          (nothingReporting && !sheetMode && !isFocusedOnBoard)) && (
           <div className="sh-panel p-3 space-y-2 pointer-events-auto">
             {notices}
-            {!sheetMode && emptyNotice}
+            {!sheetMode && !isFocusedOnBoard && emptyNotice}
           </div>
         )}
 
@@ -1197,22 +2173,28 @@ export default function LiveMapPage() {
       {sheetMode && (
         <BottomSheet
           label={
-            sheetMode === "vehicle"
-              ? "Vehicle details"
-              : sheetMode === "stop"
-                ? "Stop departures"
-                : sheetMode === "filters"
-                  ? "Filters"
-                  : "Vehicle list"
+            sheetMode === "onboard"
+              ? activeTrip
+                ? "Active trip on board"
+                : "On board"
+              : sheetMode === "vehicle"
+                ? "Vehicle details"
+                : sheetMode === "stop"
+                  ? "Stop departures"
+                  : sheetMode === "filters"
+                    ? "Filters"
+                    : "Vehicle list"
           }
           initial={sheetMode === "list" ? "full" : "peek"}
           onClose={() => {
-            if (sheetMode === "vehicle") selectVehicle(null);
+            if (sheetMode === "onboard") exitOnBoardAndTrip();
+            else if (sheetMode === "vehicle") selectVehicle(null);
             else if (sheetMode === "stop") selectStop(null);
             else if (sheetMode === "filters") setShowFilters(false);
             else setDrawerOpen(false);
           }}
         >
+          {sheetMode === "onboard" && onBoardPanel}
           {sheetMode === "vehicle" && vehiclePanel}
           {sheetMode === "stop" && stopPanel}
           {sheetMode === "filters" && (

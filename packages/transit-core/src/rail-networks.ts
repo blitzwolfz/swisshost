@@ -545,6 +545,10 @@ export function inferVehicleMode(
     if (GO_RAIL_CODES.has(code) || GO_RAIL_CODES.has(baseCode)) return "rail";
     return "bus";
   }
+  if (agencyId === "grt") {
+    if (code === "301" || baseCode === "301") return "streetcar"; // ION Light Rail
+    return "bus";
+  }
   return "bus";
 }
 
@@ -1104,6 +1108,208 @@ export function getScheduledRailRideTimeline(
     },
     stops,
   };
+}
+
+export interface RailLegScheduleResult {
+  corridor: RailCorridor;
+  originStation: RailStation;
+  destStation: RailStation;
+  directionId: 0 | 1;
+  headsign: string;
+  rideMinutes: number;
+  stopsCount: number;
+  upcomingDepartures: Array<{
+    departureTime: string;
+    arrivalTime: string;
+    etaMinutes: number;
+    waitMinutes: number;
+    rideMinutes: number;
+    headsign: string;
+  }>;
+}
+
+/**
+ * Compute upcoming scheduled departures for a single rail segment between two stations on a corridor.
+ */
+export function computeRailLegSchedule(input: {
+  corridor: RailCorridor;
+  originIdx: number;
+  destIdx: number;
+  departAtMs: number;
+  readyToBoardMs: number;
+  timezone?: string;
+  maxResults?: number;
+}): RailLegScheduleResult | null {
+  const { corridor, originIdx, destIdx, departAtMs, readyToBoardMs, timezone = "America/Toronto", maxResults = 4 } = input;
+  if (originIdx === destIdx) return null;
+  const origSt = corridor.stations[originIdx];
+  const destSt = corridor.stations[destIdx];
+  if (!origSt || !destSt) return null;
+
+  const directionId: 0 | 1 = originIdx < destIdx ? 0 : 1;
+  const totalRunMin = corridor.stations[corridor.stations.length - 1]!.offsetMin;
+  const origOffset = directionId === 0 ? origSt.offsetMin : totalRunMin - origSt.offsetMin;
+  const destOffset = directionId === 0 ? destSt.offsetMin : totalRunMin - destSt.offsetMin;
+  const rideMinutes = Math.max(2, destOffset - origOffset);
+  const stopsCount = Math.abs(destIdx - originIdx);
+  const headsign = directionId === 0 ? corridor.headsignFwd : corridor.headsignRev;
+
+  const readyCtx = getLocalServiceContext(new Date(readyToBoardMs), timezone);
+  const readyMin = readyCtx.serviceSeconds / 60;
+  const departures = buildCorridorDepartureSchedule(corridor, readyCtx.serviceDate, directionId);
+
+  const upcomingDepartures: RailLegScheduleResult["upcomingDepartures"] = [];
+  for (const tripStartMin of departures) {
+    const depMinAtStation = tripStartMin + origOffset;
+    if (depMinAtStation < readyMin - 0.5) continue;
+    if (depMinAtStation > readyMin + 180) break;
+
+    const waitMin = Math.max(0, depMinAtStation - readyMin);
+    const depMs = readyToBoardMs + Math.round(waitMin * 60_000);
+    const arrMs = depMs + rideMinutes * 60_000;
+    upcomingDepartures.push({
+      departureTime: new Date(depMs).toISOString(),
+      arrivalTime: new Date(arrMs).toISOString(),
+      etaMinutes: Math.max(0, Math.round((depMs - departAtMs) / 60_000)),
+      waitMinutes: Math.max(0, Math.round(waitMin)),
+      rideMinutes,
+      headsign,
+    });
+    if (upcomingDepartures.length >= maxResults) break;
+  }
+
+  return {
+    corridor,
+    originStation: origSt,
+    destStation: destSt,
+    directionId,
+    headsign,
+    rideMinutes,
+    stopsCount,
+    upcomingDepartures,
+  };
+}
+
+/**
+ * Find 1-transfer Rail -> Rail itineraries (supports cross-agency GO <-> TTC Subway transfers
+ * at interchanges like Union, Bloor/Dundas West, Kipling, Kennedy, and Downsview Park, as well
+ * as TTC Line 1 <-> Line 2 <-> Line 4 transfers).
+ */
+export function findRailToRailTransfers(input: {
+  fromLat: number;
+  fromLon: number;
+  toLat: number;
+  toLon: number;
+  departAtMs: number;
+  agencyFilter?: string;
+  timezone?: string;
+  maxWalkMeters?: number;
+  maxTransferMeters?: number;
+}): Array<{
+  leg1: RailLegScheduleResult & { originDistMeters: number };
+  leg2: RailLegScheduleResult & { destDistMeters: number };
+  transferWalkMeters: number;
+  transferWalkMinutes: number;
+}> {
+  const {
+    fromLat,
+    fromLon,
+    toLat,
+    toLon,
+    departAtMs,
+    agencyFilter,
+    timezone = "America/Toronto",
+    maxWalkMeters = 1800,
+    maxTransferMeters = 500,
+  } = input;
+
+  const eligibleCorridors = agencyFilter
+    ? RAIL_CORRIDORS.filter((c) => c.agencyId === agencyFilter)
+    : RAIL_CORRIDORS;
+
+  const originEntries: Array<{ corridor: RailCorridor; idx: number; st: RailStation; dist: number }> = [];
+  const destEntries: Array<{ corridor: RailCorridor; idx: number; st: RailStation; dist: number }> = [];
+
+  for (const c of eligibleCorridors) {
+    let bestO: { idx: number; st: RailStation; dist: number } | null = null;
+    let bestD: { idx: number; st: RailStation; dist: number } | null = null;
+    for (let i = 0; i < c.stations.length; i++) {
+      const st = c.stations[i]!;
+      const dO = Math.round(haversineMeters(fromLat, fromLon, st.lat, st.lon));
+      if (dO <= maxWalkMeters && (!bestO || dO < bestO.dist)) bestO = { idx: i, st, dist: dO };
+      const dD = Math.round(haversineMeters(toLat, toLon, st.lat, st.lon));
+      if (dD <= maxWalkMeters && (!bestD || dD < bestD.dist)) bestD = { idx: i, st, dist: dD };
+    }
+    if (bestO) originEntries.push({ corridor: c, ...bestO });
+    if (bestD) destEntries.push({ corridor: c, ...bestD });
+  }
+
+  const out: ReturnType<typeof findRailToRailTransfers> = [];
+  const seen = new Set<string>();
+
+  for (const oe of originEntries) {
+    for (const de of destEntries) {
+      if (oe.corridor.agencyId === de.corridor.agencyId && oe.corridor.routeId === de.corridor.routeId) continue;
+      const pairKey = `${oe.corridor.agencyId}:${oe.corridor.routeId}>${de.corridor.agencyId}:${de.corridor.routeId}`;
+      if (seen.has(pairKey)) continue;
+
+      let bestHub: { i1: number; i2: number; dist: number } | null = null;
+      for (let i1 = 0; i1 < oe.corridor.stations.length; i1++) {
+        if (i1 === oe.idx) continue;
+        const s1 = oe.corridor.stations[i1]!;
+        for (let i2 = 0; i2 < de.corridor.stations.length; i2++) {
+          if (i2 === de.idx) continue;
+          const s2 = de.corridor.stations[i2]!;
+          const td = Math.round(haversineMeters(s1.lat, s1.lon, s2.lat, s2.lon));
+          if (td <= maxTransferMeters && (!bestHub || td < bestHub.dist)) {
+            bestHub = { i1, i2, dist: td };
+          }
+        }
+      }
+
+      if (!bestHub) continue;
+      seen.add(pairKey);
+
+      const walkStartMin = Math.max(1, Math.round(oe.dist / 78));
+      const ready1Ms = departAtMs + walkStartMin * 60_000;
+      const leg1 = computeRailLegSchedule({
+        corridor: oe.corridor,
+        originIdx: oe.idx,
+        destIdx: bestHub.i1,
+        departAtMs,
+        readyToBoardMs: ready1Ms,
+        timezone,
+        maxResults: 3,
+      });
+      if (!leg1) continue;
+
+      const transferWalkMinutes = Math.max(3, Math.ceil(bestHub.dist / 78) + 2);
+      const leg1ArrMs = leg1.upcomingDepartures[0]
+        ? Date.parse(leg1.upcomingDepartures[0].arrivalTime)
+        : ready1Ms + leg1.rideMinutes * 60_000;
+      const ready2Ms = leg1ArrMs + transferWalkMinutes * 60_000;
+
+      const leg2 = computeRailLegSchedule({
+        corridor: de.corridor,
+        originIdx: bestHub.i2,
+        destIdx: de.idx,
+        departAtMs,
+        readyToBoardMs: ready2Ms,
+        timezone,
+        maxResults: 3,
+      });
+      if (!leg2) continue;
+
+      out.push({
+        leg1: { ...leg1, originDistMeters: oe.dist },
+        leg2: { ...leg2, destDistMeters: de.dist },
+        transferWalkMeters: bestHub.dist,
+        transferWalkMinutes,
+      });
+    }
+  }
+
+  return out;
 }
 
 /**

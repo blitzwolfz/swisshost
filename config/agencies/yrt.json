@@ -1,0 +1,63 @@
+{
+  "id": "yrt",
+  "name": "York Region Transit (YRT)",
+  "shortName": "YRT",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-79.4403, 43.8561],
+  "defaultZoom": 11.2,
+  "enabled": true,
+  "attribution": "Data provided by York Region Open Data (York Region Transit / Viva)",
+  "licenseUrl": "https://www.yrt.ca/en/about-us/open-data.aspx",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "yrt-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://www.yrt.ca/google/google_transit.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "yrt-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://rtu.york.ca/gtfsrealtime/VehiclePositions",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "yrt-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://rtu.york.ca/gtfsrealtime/TripUpdates",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "yrt-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://rtu.york.ca/gtfsrealtime/ServiceAlerts",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

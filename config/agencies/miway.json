@@ -1,0 +1,63 @@
+{
+  "id": "miway",
+  "name": "MiWay (Mississauga Transit)",
+  "shortName": "MiWay",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-79.6441, 43.589],
+  "defaultZoom": 11.8,
+  "enabled": true,
+  "attribution": "Data provided by City of Mississauga Open Data (MiWay)",
+  "licenseUrl": "https://www.mississauga.ca/miway-transit/developer-download/",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "miway-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://www.miapp.ca/GTFS/google_transit.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "miway-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://www.miapp.ca/GTFS_RT/Vehicle/VehiclePositions.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "miway-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://www.miapp.ca/GTFS_RT/TripUpdate/TripUpdates.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "miway-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://www.miapp.ca/gtfs_rt/Alerts/Alerts.pb",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

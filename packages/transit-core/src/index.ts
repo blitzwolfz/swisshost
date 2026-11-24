@@ -348,8 +348,10 @@ export function validateObservationQuality(
 export {
   RAIL_CORRIDORS,
   buildCorridorDepartureSchedule,
+  computeRailLegSchedule,
   computeTrapezoidalKinematics,
   findRailPlanCandidates,
+  findRailToRailTransfers,
   generateScheduledRailVehicles,
   getCorridorHeadwayMinutes,
   getRailCorridor,
@@ -362,6 +364,7 @@ export {
   type RailCorridorGeo,
   type RailHeadwaySchedule,
   type RailKinematicsSpec,
+  type RailLegScheduleResult,
   type RailStation,
   type ServiceDayType,
   type TrapezoidalKinematicsResult,
@@ -378,6 +381,16 @@ export {
   type WeatherAlert,
   type WeatherSnapshot,
 } from "./weather";
+
+export {
+  estimateOntarioTripFare,
+  evaluateTransferRisk,
+  type FareBreakdownItem,
+  type FareLegInput,
+  type TransferRiskAssessment,
+  type TransferRiskLevel,
+  type TripFareEstimate,
+} from "./fares";
 
 export function resolveFleetNumber(
   sourceVehicleId: string,
@@ -801,5 +814,224 @@ export function computeUpcomingBusesForLeg(input: {
     stopsCount,
     defaultHeadsign,
     upcomingBuses: deduped,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Agency & Nearby-Stop Transfer Hub Matching
+// ---------------------------------------------------------------------------
+
+export interface TransferHubStop {
+  agencyId: string;
+  stopId: string;
+  name: string;
+  lat: number;
+  lon: number;
+  routes: string[];
+}
+
+export interface CrossAgencyTransferMatch {
+  agency1: string;
+  route1: string;
+  hub1: { stopId: string; name: string; lat: number; lon: number };
+  agency2: string;
+  route2: string;
+  hub2: { stopId: string; name: string; lat: number; lon: number };
+  transferWalkMeters: number;
+  isCrossAgency: boolean;
+}
+
+/**
+ * Match transfer pairs between stops reachable from origin routes and stops serving destination routes,
+ * supporting both same-agency transfers and cross-agency transfers (e.g. MiWay -> TTC, GRT -> GO,
+ * Milton -> GO, Guelph -> GO) whenever the transfer stops sit within `maxTransferMeters`.
+ */
+export function findCrossAgencyTransferPairs(input: {
+  originRoutes: Map<string, { agencyId: string; routeId: string; stopId: string }>;
+  destRoutes: Map<string, { agencyId: string; routeId: string; stopId: string }>;
+  hubStops: TransferHubStop[];
+  maxTransferMeters?: number;
+  maxResults?: number;
+}): CrossAgencyTransferMatch[] {
+  const { originRoutes, destRoutes, hubStops, maxTransferMeters = 450, maxResults = 10 } = input;
+
+  const originHubs: Array<{ stop: TransferHubStop; matchingRoutes: string[] }> = [];
+  const destHubs: Array<{ stop: TransferHubStop; matchingRoutes: string[] }> = [];
+
+  for (const s of hubStops) {
+    const oMatches = s.routes.filter((r) => {
+      const originEntry = originRoutes.get(`${s.agencyId}:${r}`);
+      return originEntry && originEntry.stopId !== s.stopId;
+    });
+    if (oMatches.length > 0) originHubs.push({ stop: s, matchingRoutes: oMatches });
+
+    const dMatches = s.routes.filter((r) => {
+      const destEntry = destRoutes.get(`${s.agencyId}:${r}`);
+      return destEntry && destEntry.stopId !== s.stopId;
+    });
+    if (dMatches.length > 0) destHubs.push({ stop: s, matchingRoutes: dMatches });
+  }
+
+  const bestByRoutePair = new Map<string, CrossAgencyTransferMatch>();
+
+  for (const oh of originHubs) {
+    for (const dh of destHubs) {
+      // Quick bounding box filter (~0.005 deg ~= 550m) before Haversine
+      if (Math.abs(oh.stop.lat - dh.stop.lat) > 0.006 || Math.abs(oh.stop.lon - dh.stop.lon) > 0.008) {
+        continue;
+      }
+      const dist =
+        oh.stop.agencyId === dh.stop.agencyId && oh.stop.stopId === dh.stop.stopId
+          ? 0
+          : Math.round(haversineMeters(oh.stop.lat, oh.stop.lon, dh.stop.lat, dh.stop.lon));
+      if (dist > maxTransferMeters) continue;
+
+      const isCrossAgency = oh.stop.agencyId !== dh.stop.agencyId;
+
+      for (const r1 of oh.matchingRoutes) {
+        for (const r2 of dh.matchingRoutes) {
+          if (!isCrossAgency && r1 === r2) continue;
+          const pairKey = `${oh.stop.agencyId}:${r1}>${dh.stop.agencyId}:${r2}`;
+          const prev = bestByRoutePair.get(pairKey);
+          if (!prev || dist < prev.transferWalkMeters) {
+            bestByRoutePair.set(pairKey, {
+              agency1: oh.stop.agencyId,
+              route1: r1,
+              hub1: { stopId: oh.stop.stopId, name: oh.stop.name, lat: oh.stop.lat, lon: oh.stop.lon },
+              agency2: dh.stop.agencyId,
+              route2: r2,
+              hub2: { stopId: dh.stop.stopId, name: dh.stop.name, lat: dh.stop.lat, lon: dh.stop.lon },
+              transferWalkMeters: dist,
+              isCrossAgency,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return Array.from(bestByRoutePair.values())
+    .sort((a, b) => a.transferWalkMeters - b.transferWalkMeters)
+    .slice(0, maxResults);
+}
+
+// ---------------------------------------------------------------------------
+// Location-Driven On-Board Route Stop Progress
+// ---------------------------------------------------------------------------
+
+export interface OnBoardStopInput {
+  stopId: string;
+  stopCode?: string | null;
+  name: string;
+  lat: number;
+  lon: number;
+  stopSequence: number;
+}
+
+export interface OnBoardStopProgress {
+  stopId: string;
+  stopCode: string | null;
+  name: string;
+  lat: number;
+  lon: number;
+  stopSequence: number;
+  status: "passed" | "current" | "next" | "upcoming";
+  distanceMeters: number;
+  etaMinutes: number | null;
+}
+
+/**
+ * Compute stop-by-stop progress along a route purely from rider (or vehicle) GPS location
+ * and the route's ordered stop sequence. Works identically with or without live vehicle GPS.
+ */
+export function computeOnBoardRouteProgress(input: {
+  lat: number;
+  lon: number;
+  speedMps?: number | null;
+  headingDeg?: number | null;
+  stops: OnBoardStopInput[];
+  defaultSpeedMps?: number;
+  dwellSecondsPerStop?: number;
+}): {
+  currentIndex: number;
+  distanceToRouteMeters: number;
+  stops: OnBoardStopProgress[];
+} {
+  const { lat, lon, speedMps, headingDeg, stops, defaultSpeedMps = 6.5, dwellSecondsPerStop = 18 } = input;
+  if (stops.length === 0) {
+    return { currentIndex: 0, distanceToRouteMeters: 0, stops: [] };
+  }
+
+  let nearestIdx = 0;
+  let nearestDist = Infinity;
+  for (let i = 0; i < stops.length; i++) {
+    const d = haversineMeters(lat, lon, stops[i]!.lat, stops[i]!.lon);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestIdx = i;
+    }
+  }
+
+  // If moving past the nearest stop towards the next stop, advance current index to the next stop
+  let currentIdx = nearestIdx;
+  if (nearestDist > 55 && nearestIdx < stops.length - 1) {
+    const curr = stops[nearestIdx]!;
+    const next = stops[nearestIdx + 1]!;
+    const segBearing = bearingDegrees(curr.lat, curr.lon, next.lat, next.lon);
+    const fromCurrBearing = bearingDegrees(curr.lat, curr.lon, lat, lon);
+    const aheadOfCurr = angularDifferenceDeg(fromCurrBearing, segBearing) < 80;
+    const headingAligned =
+      headingDeg === null ||
+      headingDeg === undefined ||
+      angularDifferenceDeg(headingDeg, segBearing) < 95;
+    if (aheadOfCurr && headingAligned) {
+      currentIdx = nearestIdx + 1;
+    }
+  }
+
+  const effectiveSpeed =
+    speedMps !== null && speedMps !== undefined && speedMps > 2.2
+      ? Math.min(28, speedMps)
+      : defaultSpeedMps;
+
+  let cumDist = 0;
+  const result: OnBoardStopProgress[] = stops.map((s, idx) => {
+    const directDist = Math.round(haversineMeters(lat, lon, s.lat, s.lon));
+    let status: OnBoardStopProgress["status"];
+    let etaMinutes: number | null = null;
+
+    if (idx < currentIdx) {
+      status = "passed";
+    } else if (idx === currentIdx) {
+      const atStop = directDist <= 65;
+      status = atStop ? "current" : "next";
+      cumDist = directDist;
+      etaMinutes = atStop ? 0 : Math.max(1, Math.round(directDist / effectiveSpeed / 60));
+    } else {
+      const prev = stops[idx - 1]!;
+      cumDist += Math.max(60, Math.round(haversineMeters(prev.lat, prev.lon, s.lat, s.lon)));
+      const prevAtStop = idx === currentIdx + 1 && haversineMeters(lat, lon, stops[currentIdx]!.lat, stops[currentIdx]!.lon) <= 65;
+      status = prevAtStop ? "next" : "upcoming";
+      const stopsAhead = idx - currentIdx;
+      etaMinutes = Math.max(1, Math.round((cumDist / effectiveSpeed + stopsAhead * dwellSecondsPerStop) / 60));
+    }
+
+    return {
+      stopId: s.stopId,
+      stopCode: s.stopCode ?? null,
+      name: s.name,
+      lat: s.lat,
+      lon: s.lon,
+      stopSequence: s.stopSequence,
+      status,
+      distanceMeters: idx >= currentIdx ? Math.round(cumDist) : directDist,
+      etaMinutes,
+    };
+  });
+
+  return {
+    currentIndex: currentIdx,
+    distanceToRouteMeters: Math.round(nearestDist),
+    stops: result,
   };
 }

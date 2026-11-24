@@ -30,6 +30,17 @@ const ALLOWED_HOST_SUFFIXES = [
   "mobilitydatabase.org",
   "nextlift.ca",
   "thunderbay.ca",
+  "tmix.se",
+  "grt.ca",
+  "milton.ca",
+  "ontarionorthland.ca",
+  "york.ca",
+  "yrt.ca",
+  "hamilton.ca",
+  "durham.ca",
+  "durhamregiontransit.com",
+  "oakville.ca",
+  "oakvilletransit.ca",
 ];
 
 /**

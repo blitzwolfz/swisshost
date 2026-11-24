@@ -1,0 +1,63 @@
+{
+  "id": "drt",
+  "name": "Durham Region Transit (DRT)",
+  "shortName": "DRT",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-78.9422, 43.8971],
+  "defaultZoom": 11.2,
+  "enabled": true,
+  "attribution": "Data provided by Region of Durham Open Data (Durham Region Transit / PULSE)",
+  "licenseUrl": "https://www.durhamregiontransit.com/",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "drt-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://maps.durham.ca/OpenDataGTFS/GTFS_Durham_TXT.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "drt-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://drtonline.durhamregiontransit.com/gtfsrealtime/VehiclePositions",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "drt-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://drtonline.durhamregiontransit.com/gtfsrealtime/TripUpdates",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "drt-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://maps.durham.ca/OpenDataGTFS/alerts.pb",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}

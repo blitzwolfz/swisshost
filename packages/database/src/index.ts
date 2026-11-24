@@ -48,11 +48,12 @@ export async function ensureAgenciesSeeded(
   force = false
 ): Promise<void> {
   if (!force) {
-    const existing = await db
-      .prepare("SELECT COUNT(*) as c FROM agencies")
-      .first<{ c: number }>()
-      .catch(() => null);
-    if ((existing?.c ?? 0) >= configs.length) {
+    const expectedFeeds = configs.reduce((s, a) => s + a.feeds.length, 0);
+    const [existingAgencies, existingFeeds] = await Promise.all([
+      db.prepare("SELECT COUNT(*) as c FROM agencies").first<{ c: number }>().catch(() => null),
+      db.prepare("SELECT COUNT(*) as c FROM feeds").first<{ c: number }>().catch(() => null),
+    ]);
+    if ((existingAgencies?.c ?? 0) >= configs.length && (existingFeeds?.c ?? 0) >= expectedFeeds) {
       return;
     }
   }

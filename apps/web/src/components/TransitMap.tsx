@@ -27,6 +27,10 @@ interface TransitMapProps {
   routeShapeColor?: string | null;
   /** Rail corridor tracks (TTC Subway / GO Rail) drawn beneath vehicles. */
   railCorridors?: RailCorridorOverlay[];
+  /** Optional dashed walking legs (origin -> stop, transfer walk, stop -> destination) for active trip mode. */
+  walkSegments?: Array<Array<[number, number]>>;
+  /** Optional labelled key markers (Board, Transfer, Exit, Origin, Destination) for active trip mode. */
+  tripMarkers?: Array<{ lat: number; lon: number; label: string; accent?: boolean }>;
   replayTrail?: Array<[number, number]> | null;
   stops?: Array<{ stop_id: string; name: string; lat: number; lon: number }>;
   userLocation?: { lat: number; lon: number } | null;
@@ -462,6 +466,8 @@ export function TransitMap({
   routeShape,
   routeShapeColor,
   railCorridors = [],
+  walkSegments = [],
+  tripMarkers = [],
   replayTrail,
   stops,
   userLocation = null,
@@ -487,6 +493,7 @@ export function TransitMap({
   const shownPos = useRef(new Map<string, [number, number]>());
   const animRef = useRef<number | null>(null);
   const stopLabelRef = useRef<maplibregl.Marker | null>(null);
+  const tripMarkerRefs = useRef<maplibregl.Marker[]>([]);
   const hoverPopupRef = useRef<maplibregl.Popup | null>(null);
 
   vehiclesRef.current = vehicles;
@@ -644,6 +651,15 @@ export function TransitMap({
         source: "replay-trail",
         layout: { "line-join": "round", "line-cap": "round" },
         paint: { "line-color": t.ink, "line-width": 4, "line-dasharray": [2, 1.2] },
+      });
+
+      map.addSource("walk-segments", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: "walk-segments-line",
+        type: "line",
+        source: "walk-segments",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: { "line-color": t.ink, "line-width": 3.5, "line-dasharray": [1.5, 1.5], "line-opacity": 0.85 },
       });
 
       map.addSource("stops", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
@@ -958,6 +974,8 @@ export function TransitMap({
       hoverPopupRef.current = null;
       stopLabelRef.current?.remove();
       stopLabelRef.current = null;
+      for (const m of tripMarkerRefs.current) m.remove();
+      tripMarkerRefs.current = [];
       map.remove();
       mapRef.current = null;
     };
@@ -1117,6 +1135,50 @@ export function TransitMap({
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [replayTrail, resolvedTheme]
+  );
+
+  useEffect(
+    () =>
+      whenReady("walk-segments", () => {
+        (mapRef.current!.getSource("walk-segments") as maplibregl.GeoJSONSource).setData({
+          type: "FeatureCollection",
+          features: walkSegments
+            .filter((seg) => seg.length >= 2)
+            .map((coordinates) => ({
+              type: "Feature" as const,
+              geometry: { type: "LineString" as const, coordinates },
+              properties: {},
+            })),
+        });
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [walkSegments, resolvedTheme]
+  );
+
+  useEffect(
+    () =>
+      whenReady("stops", () => {
+        const map = mapRef.current!;
+        for (const m of tripMarkerRefs.current) m.remove();
+        tripMarkerRefs.current = [];
+        for (const tm of tripMarkers) {
+          const el = document.createElement("div");
+          el.className = "sh-map-label";
+          if (tm.accent) {
+            el.style.background = theme.accent;
+            el.style.color = theme.paper;
+            el.style.borderColor = theme.accent;
+          }
+          el.textContent = tm.label;
+          el.setAttribute("aria-hidden", "true");
+          const marker = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, -10] })
+            .setLngLat([tm.lon, tm.lat])
+            .addTo(map);
+          tripMarkerRefs.current.push(marker);
+        }
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tripMarkers, resolvedTheme]
   );
 
   useEffect(

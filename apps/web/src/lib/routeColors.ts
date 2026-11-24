@@ -46,6 +46,7 @@ const OFFICIAL_RAIL_COLORS: Record<string, string> = {
   "go:MI": "#C45B00",
   "go:RH": "#007BA7",
   "go:UP": "#2B4C7E",
+  "grt:301": "#0072CE",
 };
 
 function relativeLuminance(hex: string): number {

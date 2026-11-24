@@ -1,0 +1,33 @@
+{
+  "id": "oakville",
+  "name": "Oakville Transit",
+  "shortName": "Oakville",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-79.6877, 43.4675],
+  "defaultZoom": 12.0,
+  "enabled": true,
+  "attribution": "Data provided by Town of Oakville Open Data (Oakville Transit)",
+  "licenseUrl": "https://www.oakvilletransit.ca/",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": false,
+    "tripUpdates": false,
+    "serviceAlerts": false,
+    "historicalArchive": false
+  },
+  "feeds": [
+    {
+      "id": "oakville-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "https://www.arcgis.com/sharing/rest/content/items/d78a1c1ad6a940009de8b68839a8f606/data",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    }
+  ]
+}

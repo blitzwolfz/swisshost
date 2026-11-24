@@ -175,6 +175,30 @@ export function formatDelay(delaySec: number | null | undefined): { text: string
   return { text: "On time", tone: "ok" };
 }
 
+export function formatOccupancy(
+  status: string | null | undefined
+): { label: string; short: string; tone: "ok" | "warn" | "err" } | null {
+  if (!status || status === "NO_DATA_AVAILABLE") return null;
+  switch (status) {
+    case "EMPTY":
+      return { label: "Empty", short: "Empty", tone: "ok" };
+    case "MANY_SEATS_AVAILABLE":
+      return { label: "Many seats", short: "Quiet", tone: "ok" };
+    case "FEW_SEATS_AVAILABLE":
+      return { label: "Few seats", short: "Moderate", tone: "warn" };
+    case "STANDING_ROOM_ONLY":
+      return { label: "Standing room", short: "Busy", tone: "warn" };
+    case "CRUSHED_STANDING_ROOM_ONLY":
+    case "FULL":
+      return { label: "Full", short: "Full", tone: "err" };
+    case "NOT_ACCEPTING_PASSENGERS":
+    case "NOT_BOARDABLE":
+      return { label: "Not boarding", short: "Full", tone: "err" };
+    default:
+      return null;
+  }
+}
+
 export function formatRelativeAge(iso: string | null | undefined): string {
   if (!iso) return "Never";
   const diffSec = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));

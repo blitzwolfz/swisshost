@@ -4,6 +4,15 @@ import guelphConfig from "../../../config/agencies/guelph.json";
 import ttcConfig from "../../../config/agencies/ttc.json";
 import goConfig from "../../../config/agencies/go-transit.json";
 import thunderbayConfig from "../../../config/agencies/thunderbay.json";
+import miwayConfig from "../../../config/agencies/miway.json";
+import miltonConfig from "../../../config/agencies/milton.json";
+import ontarionorthlandConfig from "../../../config/agencies/ontarionorthland.json";
+import grtConfig from "../../../config/agencies/grt.json";
+import bramptonConfig from "../../../config/agencies/brampton.json";
+import yrtConfig from "../../../config/agencies/yrt.json";
+import oakvilleConfig from "../../../config/agencies/oakville.json";
+import hsrConfig from "../../../config/agencies/hsr.json";
+import drtConfig from "../../../config/agencies/drt.json";
 import type { FeedSchedulerDO } from "../../collector/src/feed-scheduler-do";
 import type { AgencyLiveDO } from "../../live/src/agency-live-do";
 
@@ -39,6 +48,15 @@ export const BUILTIN_AGENCIES: AgencyConfig[] = [
   ttcConfig as AgencyConfig,
   goConfig as AgencyConfig,
   thunderbayConfig as AgencyConfig,
+  miwayConfig as AgencyConfig,
+  miltonConfig as AgencyConfig,
+  ontarionorthlandConfig as AgencyConfig,
+  grtConfig as AgencyConfig,
+  bramptonConfig as AgencyConfig,
+  yrtConfig as AgencyConfig,
+  oakvilleConfig as AgencyConfig,
+  hsrConfig as AgencyConfig,
+  drtConfig as AgencyConfig,
 ];
 
 let cachedTursoKey = "";

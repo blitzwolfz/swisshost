@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       agency:
-        description: "Optional agency id (guelph, ttc, go, thunderbay); blank for all"
+        description: "Optional agency id (go, ttc, miway, brampton, yrt, drt, oakville, milton, hsr, guelph, grt, ontarionorthland, thunderbay); blank for all"
         required: false
         default: ""
 

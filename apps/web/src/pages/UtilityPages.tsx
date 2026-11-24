@@ -463,9 +463,18 @@ export function AccountPage() {
             <div>
               <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Agency</label>
               <select value={subAgency} onChange={(e) => setSubAgency(e.target.value)} className="sh-input">
-                <option value="guelph">Guelph Transit</option>
-                <option value="ttc">TTC</option>
                 <option value="go">GO Transit</option>
+                <option value="ttc">TTC</option>
+                <option value="miway">MiWay (Mississauga)</option>
+                <option value="brampton">Brampton Transit</option>
+                <option value="yrt">York Region Transit (YRT)</option>
+                <option value="drt">Durham Region Transit (DRT)</option>
+                <option value="oakville">Oakville Transit</option>
+                <option value="milton">Milton Transit</option>
+                <option value="hsr">Hamilton HSR</option>
+                <option value="guelph">Guelph Transit</option>
+                <option value="grt">Grand River Transit (GRT)</option>
+                <option value="ontarionorthland">Ontario Northland</option>
                 <option value="thunderbay">Thunder Bay Transit</option>
               </select>
             </div>
