@@ -2,10 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowRight,
-  Compass,
   Crosshair,
-  Gauge,
   History as HistoryIcon,
   List,
   SlidersHorizontal,
@@ -114,7 +111,7 @@ export default function LiveMapPage() {
   const delayInfo = selectedVehicle ? formatDelay(selectedVehicle.scheduleDeviationSec) : null;
 
   return (
-    <div className="relative w-full h-[calc(100dvh-55px)] min-h-[520px] overflow-hidden">
+    <div className="sh-map-shell relative w-full flex-1 min-h-[360px] overflow-hidden">
       {/* Full-bleed WebGL MapLibre Canvas */}
       <TransitMap
         center={center}
@@ -130,9 +127,9 @@ export default function LiveMapPage() {
       />
 
       {/* Floating Top-Left HUD Bar */}
-      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 max-w-[calc(100vw-24px)] sm:max-w-xl pointer-events-none">
-        <div className="sh-glass rounded-xl px-3 py-2 flex flex-wrap items-center gap-2 pointer-events-auto">
-          <div className="flex items-center gap-2 pr-1">
+      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 sm:max-w-xl pointer-events-none">
+        <div className="sh-panel p-2 pl-3 flex flex-wrap items-center gap-2 pointer-events-auto">
+          <div className="flex items-center gap-2 pr-1 mr-auto">
             <span
               className="sh-pulse-dot"
               style={{
@@ -144,16 +141,19 @@ export default function LiveMapPage() {
                 background: "currentColor",
               }}
             />
-            <span className="text-xs font-bold tabular-nums">
+            <span className="text-xl font-bold tabular-nums leading-none tracking-tight">
               {filteredVehicles.length}
             </span>
-            <span className="text-xs hidden sm:inline" style={{ color: "var(--text-muted)" }}>
+            <span className="text-xs leading-tight" style={{ color: "var(--text-muted)" }}>
+              {filteredVehicles.length === 1 ? "vehicle" : "vehicles"}
+              <br className="sm:hidden" />
+              <span className="hidden sm:inline">, </span>
               {live.feedStatus === "missing_key"
-                ? "Awaiting API key"
+                ? "awaiting API key"
                 : live.connection === "live_ws"
                   ? "live"
                   : live.feedStatus}
-              {live.lastSuccessAt ? ` · ${formatRelativeAge(live.lastSuccessAt)}` : ""}
+              {live.lastSuccessAt ? `, updated ${formatRelativeAge(live.lastSuccessAt)}` : ""}
             </span>
           </div>
 
@@ -162,7 +162,7 @@ export default function LiveMapPage() {
               aria-label="Filter by route"
               value={routeFilter}
               onChange={(e) => setParam("route", e.target.value || null)}
-              className="sh-input text-xs py-1 max-w-[170px]"
+              className="sh-input order-last basis-full sm:order-none sm:basis-auto sm:max-w-[200px]"
             >
               <option value="">All routes</option>
               {(routesData?.routes ?? []).map((r) => (
@@ -175,7 +175,7 @@ export default function LiveMapPage() {
 
           <button
             type="button"
-            className={`sh-btn py-1 px-2.5 text-xs ${showFilters ? "sh-highlight" : ""}`}
+            className={`sh-btn px-3 ${showFilters ? "sh-highlight" : ""}`}
             onClick={() => setShowFilters((s) => !s)}
             aria-expanded={showFilters}
           >
@@ -184,7 +184,8 @@ export default function LiveMapPage() {
 
           <button
             type="button"
-            className={`sh-btn py-1 px-2.5 text-xs ${drawerOpen ? "sh-btn-primary" : ""}`}
+            className={`sh-btn px-3 ${drawerOpen ? "sh-highlight" : ""}`}
+            aria-expanded={drawerOpen}
             onClick={() => setDrawerOpen((d) => !d)}
           >
             <List size={13} /> List
@@ -194,31 +195,30 @@ export default function LiveMapPage() {
         {/* Missing Key Notice (GO Transit) */}
         {activeAgency?.liveStatus === "missing_key" && (
           <div
-            className="sh-glass rounded-xl px-3.5 py-2.5 text-xs pointer-events-auto flex items-center justify-between gap-3"
-            style={{ background: "var(--gold-surface)", color: "var(--text)" }}
+            className="sh-panel sh-highlight px-3 py-2.5 text-sm pointer-events-auto flex items-center justify-between gap-3"
           >
             <span>
-              <strong>{activeAgency.name}</strong> is ready and awaiting <code>GO_TRANSIT_API_KEY</code>.
+              <strong>{activeAgency.name}</strong> needs <code>GO_TRANSIT_API_KEY</code> before live positions appear.
             </span>
-            <Link to="/status" className="font-semibold shrink-0">
-              Status →
+            <Link to="/status" className="font-semibold shrink-0" style={{ color: "#000" }}>
+              Feed status
             </Link>
           </div>
         )}
 
         {/* Expandable Advanced Filter Popover */}
         {showFilters && (
-          <div className="sh-glass rounded-xl p-3 flex flex-wrap items-end gap-2.5 text-xs pointer-events-auto">
+          <div className="sh-panel p-3 flex flex-wrap items-end gap-3 text-xs pointer-events-auto">
             <div>
               <label className="block font-medium mb-1" style={{ color: "var(--text-muted)" }}>
-                Fleet # / Route
+                Fleet or route number
               </label>
               <input
                 type="text"
                 value={fleetFilter}
                 onChange={(e) => setFleetFilter(e.target.value)}
                 placeholder="e.g. 4401, 504"
-                className="sh-input py-1 text-xs w-36"
+                className="sh-input w-40"
               />
             </div>
             <div>
@@ -228,7 +228,7 @@ export default function LiveMapPage() {
               <select
                 value={freshnessFilter}
                 onChange={(e) => setFreshnessFilter(e.target.value as "all" | "fresh" | "stale")}
-                className="sh-input py-1 text-xs"
+                className="sh-input"
               >
                 <option value="all">All</option>
                 <option value="fresh">Fresh only</option>
@@ -242,7 +242,7 @@ export default function LiveMapPage() {
               <select
                 value={assignedFilter}
                 onChange={(e) => setAssignedFilter(e.target.value as "all" | "assigned" | "unassigned")}
-                className="sh-input py-1 text-xs"
+                className="sh-input"
               >
                 <option value="all">All</option>
                 <option value="assigned">Assigned</option>
@@ -251,7 +251,7 @@ export default function LiveMapPage() {
             </div>
             <button
               type="button"
-              className="sh-btn py-1 text-xs"
+              className="sh-btn"
               onClick={() => {
                 setFleetFilter("");
                 setFreshnessFilter("all");
@@ -269,19 +269,18 @@ export default function LiveMapPage() {
       {selectedVehicle && (
         <aside
           aria-label="Selected vehicle details"
-          className="sh-glass absolute bottom-3 left-3 right-3 sm:right-auto sm:w-[400px] z-20 rounded-2xl p-4 space-y-3"
-          style={{ boxShadow: "var(--shadow-lg)" }}
+          className="sh-panel absolute bottom-0 left-0 right-0 sm:bottom-3 sm:left-3 sm:right-auto sm:w-[420px] z-20 p-4 space-y-4 border-x-0 border-b-0 border-t-2 sm:border sm:border-t-2"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-2.5">
               <span
                 className="sh-route-shield text-white"
-                style={{ backgroundColor: selectedVehicle.routeColor || "#B91C1C" }}
+                style={{ backgroundColor: selectedVehicle.routeColor || "#E2001A" }}
               >
                 {selectedVehicle.routeShortName ?? selectedVehicle.routeId ?? "—"}
               </span>
               <div>
-                <div className="font-bold text-base leading-tight tabular-nums flex items-center gap-1.5">
+                <div className="font-bold text-xl leading-tight tracking-tight tabular-nums flex items-center gap-2">
                   Vehicle #{selectedVehicle.fleetNumber}
                   <span className="sh-pill sh-pill-muted uppercase">{selectedVehicle.agencyId}</span>
                 </div>
@@ -310,49 +309,51 @@ export default function LiveMapPage() {
               type="button"
               onClick={() => setParam("vehicle", null)}
               aria-label="Close vehicle panel"
-              className="sh-btn p-1.5 rounded-lg"
+              className="sh-btn sh-btn-icon"
             >
-              <X size={14} />
+              <X size={16} />
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-xs">
-            <div className="rounded-lg p-2 border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-              <div className="flex items-center gap-1 mb-0.5" style={{ color: "var(--text-muted)" }}>
-                <Gauge size={11} /> Speed
+          <div className="grid grid-cols-3 text-xs border-t" style={{ borderColor: "var(--ink)" }}>
+            <div className="py-2 pr-2">
+              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
+                Speed
               </div>
-              <div className="font-bold tabular-nums">{formatSpeed(selectedVehicle.speedMps, units)}</div>
+              <div className="font-bold text-base tabular-nums">{formatSpeed(selectedVehicle.speedMps, units)}</div>
             </div>
-            <div className="rounded-lg p-2 border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
-              <div className="flex items-center gap-1 mb-0.5" style={{ color: "var(--text-muted)" }}>
-                <Compass size={11} /> Heading
+            <div className="py-2 px-2 border-l" style={{ borderColor: "var(--border)" }}>
+              <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>
+                Heading
               </div>
-              <div className="font-bold tabular-nums">
+              <div className="font-bold text-base tabular-nums">
                 {selectedVehicle.bearingDeg !== null ? `${Math.round(selectedVehicle.bearingDeg)}°` : "Unknown"}
               </div>
             </div>
-            <div className="rounded-lg p-2 border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+            <div className="py-2 pl-2 border-l" style={{ borderColor: "var(--border)" }}>
               <div className="mb-0.5" style={{ color: "var(--text-muted)" }}>Status</div>
-              <div className="font-bold truncate">{selectedVehicle.currentStatus?.replace(/_/g, " ") || "In transit"}</div>
+              <div className="font-bold text-base truncate capitalize">{selectedVehicle.currentStatus?.replace(/_/g, " ") || "In transit"}</div>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
             <Link
               to={`/vehicles/${selectedVehicle.agencyId}/${encodeURIComponent(selectedVehicle.vehicleId)}`}
-              className="sh-btn sh-btn-primary text-xs flex-1 no-underline hover:no-underline"
+              className="sh-btn sh-btn-primary flex-1"
             >
-              Vehicle Page <ArrowRight size={13} />
+              Open vehicle
             </Link>
             <Link
               to={`/history?agency=${selectedVehicle.agencyId}&vehicle=${encodeURIComponent(selectedVehicle.vehicleId)}`}
-              className="sh-btn text-xs no-underline hover:no-underline"
+              className="sh-btn"
             >
               <HistoryIcon size={13} /> Replay
             </Link>
             <button
               type="button"
-              className={`sh-btn text-xs ${followSelected ? "sh-highlight" : ""}`}
+              className={`sh-btn sh-btn-icon ${followSelected ? "sh-highlight" : ""}`}
+              aria-pressed={followSelected}
+              aria-label="Follow vehicle"
               onClick={() => setFollowSelected((f) => !f)}
               title="Follow vehicle"
             >
@@ -360,8 +361,9 @@ export default function LiveMapPage() {
             </button>
             <button
               type="button"
-              className="sh-btn text-xs"
-              title="Toggle favorite"
+              className="sh-btn sh-btn-icon"
+              title="Favourite"
+              aria-label="Favourite"
               onClick={() =>
                 toggleFavorite({
                   agencyId: selectedVehicle.agencyId,
@@ -385,7 +387,7 @@ export default function LiveMapPage() {
                 to={`/trips/${selectedVehicle.agencyId}/${encodeURIComponent(selectedVehicle.tripId)}`}
                 className="font-mono font-semibold"
               >
-                {selectedVehicle.tripId} →
+                {selectedVehicle.tripId}
               </Link>
             </div>
           )}
@@ -396,21 +398,20 @@ export default function LiveMapPage() {
       {drawerOpen && (
         <aside
           aria-label="Live vehicles list"
-          className="sh-glass absolute top-3 bottom-3 right-3 w-[360px] max-w-[calc(100vw-24px)] z-30 rounded-2xl flex flex-col overflow-hidden"
-          style={{ boxShadow: "var(--shadow-lg)" }}
+          className="sh-panel absolute inset-0 sm:inset-auto sm:top-3 sm:bottom-3 sm:right-3 sm:w-[380px] z-30 flex flex-col overflow-hidden border-0 sm:border"
         >
-          <div className="px-3.5 py-2.5 border-b flex items-center justify-between" style={{ borderColor: "var(--border)" }}>
-            <div className="font-bold text-sm tabular-nums">
-              Active Vehicles ({filteredVehicles.length})
+          <div className="pl-4 pr-2 py-2 border-b-2 flex items-center justify-between" style={{ borderColor: "var(--ink)" }}>
+            <div className="font-bold text-lg tracking-tight tabular-nums">
+              {filteredVehicles.length} vehicles
             </div>
-            <button type="button" className="sh-btn p-1" onClick={() => setDrawerOpen(false)} aria-label="Close list">
-              <X size={14} />
+            <button type="button" className="sh-btn sh-btn-icon" onClick={() => setDrawerOpen(false)} aria-label="Close list">
+              <X size={16} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto divide-y" style={{ borderColor: "var(--border)" }}>
+          <div className="flex-1 overflow-y-auto overscroll-contain">
             {filteredVehicles.length === 0 ? (
-              <div className="p-4 text-xs" style={{ color: "var(--text-muted)" }}>
-                No active vehicles match the current filter.
+              <div className="p-4 text-sm" style={{ color: "var(--text-muted)" }}>
+                No vehicles match these filters. Reset filters to see the whole fleet.
               </div>
             ) : (
               filteredVehicles.slice(0, 200).map((v) => {
@@ -424,27 +425,27 @@ export default function LiveMapPage() {
                       setParam("vehicle", v.vehicleId);
                       setFollowSelected(true);
                     }}
-                    className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between gap-2 cursor-pointer border-0 transition-colors ${
+                    className={`w-full text-left px-4 py-3 flex items-center justify-between gap-3 cursor-pointer border-0 border-b ${
                       isSel ? "sh-highlight" : "bg-transparent hover:bg-[var(--surface)]"
                     }`}
-                    style={{ color: "var(--text)" }}
+                    style={{ borderColor: "var(--border)", color: isSel ? "#000" : "var(--text)" }}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <span
                         className="sh-route-shield text-white shrink-0"
-                        style={{ backgroundColor: v.routeColor || "#B91C1C" }}
+                        style={{ backgroundColor: v.routeColor || "#E2001A" }}
                       >
                         {v.routeShortName ?? v.routeId ?? "—"}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-xs font-bold tabular-nums truncate">
+                        <div className="text-sm font-bold tabular-nums truncate">
                           #{v.fleetNumber}{" "}
                           <span className="font-normal uppercase" style={{ color: "var(--text-muted)" }}>
                             {v.agencyId}
                           </span>
                         </div>
                         <div className="text-[11px] tabular-nums" style={{ color: "var(--text-muted)" }}>
-                          {formatSpeed(v.speedMps, units)} · {v.ageSeconds}s ago
+                          {formatSpeed(v.speedMps, units)}, {v.ageSeconds}s ago
                         </div>
                       </div>
                     </div>
@@ -460,15 +461,12 @@ export default function LiveMapPage() {
       {/* Subtle Bottom-Left Utility Strip when no vehicle selected */}
       {!selectedVehicle && (
         <div
-          className="sh-glass hidden sm:flex items-center gap-3 absolute bottom-3 left-3 z-10 rounded-lg px-2.5 py-1 text-[11px]"
+          className="sh-panel hidden sm:flex items-center gap-4 absolute bottom-3 left-3 z-10 px-3 py-1.5 text-xs"
           style={{ color: "var(--text-muted)" }}
         >
           <Link to="/status" className="font-medium">Status</Link>
-          <span>·</span>
           <Link to="/alerts" className="font-medium">Alerts</Link>
-          <span>·</span>
           <a href="/openapi.json" target="_blank" rel="noreferrer" className="font-medium">API</a>
-          <span>·</span>
           <Link to="/admin" className="font-medium">Admin</Link>
         </div>
       )}

@@ -30,13 +30,13 @@ export function AlertsPage() {
   });
 
   return (
-    <div className="max-w-5xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="sh-page sh-page-narrow">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             {effectiveAgency.toUpperCase()} Advisories
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Service Alerts</h1>
+          <h1 className="sh-title">Service Alerts</h1>
         </div>
         <label className="text-xs font-semibold flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={historical} onChange={(e) => setHistorical(e.target.checked)} />
@@ -69,7 +69,7 @@ export function AlertsPage() {
                 {a.informedEntities.map((e, i) =>
                   e.routeId ? (
                     <Link key={i} to={`/routes/${effectiveAgency}/${encodeURIComponent(e.routeId)}`}>
-                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#B91C1C" }}>
+                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
                         {e.routeId}
                       </span>
                     </Link>
@@ -131,19 +131,19 @@ export function StatusPage() {
     refetchInterval: 30_000,
   });
 
-  if (isLoading || !data) return <div className="max-w-6xl mx-auto p-6 text-sm">Loading status…</div>;
+  if (isLoading || !data) return <div className="sh-page text-sm">Loading status…</div>;
 
   const d1Pct = Math.min(100, Math.round((data.quota.d1Writes / Math.max(1, data.quota.d1WriteBudget)) * 100));
   const doPct = Math.min(100, Math.round((data.quota.doRequests / Math.max(1, data.quota.doRequestBudget)) * 100));
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             Observability &amp; Free-Tier Guardrails
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Feed Status &amp; Capacity</h1>
+          <h1 className="sh-title">Feed Status &amp; Capacity</h1>
         </div>
         <span className={`sh-pill ${data.platformStatus === "operational" ? "sh-pill-ok" : "sh-pill-warn"}`}>
           Platform: {data.platformStatus} · Quota tier: {data.quota.tier}
@@ -157,8 +157,8 @@ export function StatusPage() {
             <span>Daily D1 Writes (Free Budget)</span>
             <span className="tabular-nums">{data.quota.d1Writes.toLocaleString()} / {data.quota.d1WriteBudget.toLocaleString()} ({d1Pct}%)</span>
           </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
-            <div className="h-full rounded-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "#b91c1c" : "#15803d" }} />
+          <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
+            <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--signal)" : "var(--ink)" }} />
           </div>
         </div>
         <div className="sh-card p-4 space-y-2">
@@ -166,14 +166,14 @@ export function StatusPage() {
             <span>Daily Durable Object Requests</span>
             <span className="tabular-nums">{data.quota.doRequests.toLocaleString()} / {data.quota.doRequestBudget.toLocaleString()} ({doPct}%)</span>
           </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
-            <div className="h-full rounded-full" style={{ width: `${doPct}%`, background: doPct >= 85 ? "#b91c1c" : "#15803d" }} />
+          <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
+            <div className="h-full" style={{ width: `${doPct}%`, background: doPct >= 85 ? "var(--signal)" : "var(--ink)" }} />
           </div>
         </div>
       </div>
 
       <section className="space-y-2.5">
-        <h2 className="text-base font-bold m-0">Upstream Agency Feeds</h2>
+        <h2 className="sh-section-title">Upstream Agency Feeds</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
@@ -221,7 +221,7 @@ export function StatusPage() {
       </section>
 
       <section className="space-y-2.5">
-        <h2 className="text-base font-bold m-0">12-Hour GitHub Archive (swisshost-data)</h2>
+        <h2 className="sh-section-title">12-Hour GitHub Archive (swisshost-data)</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
@@ -270,19 +270,18 @@ export function FavoritesPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
+    <div className="sh-page sh-page-narrow">
       <div className="flex items-end justify-between">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             Saved Locally &amp; Offline-Ready
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5 flex items-center gap-2">
+          <h1 className="sh-title flex items-center gap-2">
             <Star size={20} style={{ color: "var(--gold-accent)" }} /> Favorites ({favorites.length})
           </h1>
         </div>
         <Link to="/account" className="text-xs font-semibold">
-          Sync &amp; alerts →
-        </Link>
+          Sync &amp; alerts</Link>
       </div>
 
       {favorites.length === 0 ? (
@@ -385,12 +384,12 @@ export function AccountPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
+    <div className="sh-page sh-page-narrow">
       <div>
-        <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+        <div className="sh-kicker">
           Optional Sync &amp; Vehicle Alerts
         </div>
-        <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Account &amp; Notifications</h1>
+        <h1 className="sh-title">Account &amp; Notifications</h1>
         <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
           Public browsing never requires an account. Create an optional handle &amp; password to watch specific fleet numbers.
         </p>
@@ -400,11 +399,11 @@ export function AccountPage() {
 
       {!me?.user ? (
         <form onSubmit={submitAuth} className="sh-card p-5 max-w-md space-y-4">
-          <div className="flex gap-1 p-1 rounded-lg border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
+          <div className="flex gap-1 p-1 border" style={{ background: "var(--surface)", borderColor: "var(--border)" }}>
             <button
               type="button"
               onClick={() => setMode("login")}
-              className="flex-1 py-1.5 rounded-md text-xs font-bold border-0 cursor-pointer"
+              className="flex-1 py-1.5 text-xs font-bold border-0 cursor-pointer"
               style={{
                 background: mode === "login" ? "var(--bg-elevated)" : "transparent",
                 color: mode === "login" ? "var(--text)" : "var(--text-muted)",
@@ -415,7 +414,7 @@ export function AccountPage() {
             <button
               type="button"
               onClick={() => setMode("register")}
-              className="flex-1 py-1.5 rounded-md text-xs font-bold border-0 cursor-pointer"
+              className="flex-1 py-1.5 text-xs font-bold border-0 cursor-pointer"
               style={{
                 background: mode === "register" ? "var(--bg-elevated)" : "transparent",
                 color: mode === "register" ? "var(--text)" : "var(--text-muted)",
@@ -518,7 +517,7 @@ export function AccountPage() {
           </form>
 
           <section className="space-y-2">
-            <h2 className="text-base font-bold m-0">Active Watches ({subsData?.subscriptions.length ?? 0})</h2>
+            <h2 className="sh-section-title">Active Watches ({subsData?.subscriptions.length ?? 0})</h2>
             <div className="sh-table-wrap">
               <table className="sh-table">
                 <thead>

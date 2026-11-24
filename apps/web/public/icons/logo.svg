@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <title>Swisshost</title>
+  <rect width="48" height="48" fill="#E2001A"/>
+  
+    <path d="M31.5 13H13v11h22v11H16.5" fill="none" stroke="#FFD100" stroke-width="6" stroke-linejoin="miter" stroke-linecap="butt"/>
+    <rect x="31" y="9" width="8" height="8" fill="#FFFFFF"/>
+    <rect x="9" y="31" width="8" height="8" fill="#FFFFFF"/>
+  
+</svg>

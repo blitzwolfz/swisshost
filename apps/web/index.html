@@ -2,15 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#B91C1C" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Swisshost" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="format-detection" content="telephone=no" />
     <meta
       name="description"
-      content="Swisshost — Public transit tracking, fleet reference, historical replay, and schedule intelligence for Guelph Transit, TTC, and GO Transit."
+      content="Live vehicle positions, stop departures, fleet reference and trip history for Guelph Transit, TTC and GO Transit."
     />
-    <title>Swisshost — Public Transit Tracker</title>
+    <title>Swisshost</title>
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" type="image/png" href="/icons/favicon-64.png" />
+    <link rel="icon" type="image/svg+xml" href="/icons/logo.svg" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <script>
       (function () {
@@ -18,6 +25,8 @@
           var t = localStorage.getItem("swisshost_theme") || "system";
           var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
           if (dark) document.documentElement.classList.add("dark");
+          var metas = document.querySelectorAll('meta[name="theme-color"]');
+          if (t !== "system") metas.forEach(function (m) { m.setAttribute("content", dark ? "#000000" : "#FFFFFF"); m.removeAttribute("media"); });
         } catch (e) {}
       })();
     </script>

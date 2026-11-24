@@ -47,13 +47,13 @@ export function RoutesPage() {
   }, [data, query, onlyActive]);
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             {effectiveAgency.toUpperCase()} Network
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Routes</h1>
+          <h1 className="sh-title">Routes</h1>
           <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
             {data?.staticVersionId
               ? `Active static GTFS version ${data.staticVersionId} · ${filtered.length} routes shown`
@@ -112,7 +112,7 @@ export function RoutesPage() {
                     >
                       <span
                         className="sh-route-shield text-white"
-                        style={{ backgroundColor: r.color || "#B91C1C" }}
+                        style={{ backgroundColor: r.color || "#E2001A" }}
                       >
                         {r.shortName}
                       </span>
@@ -129,7 +129,7 @@ export function RoutesPage() {
                   <td>
                     {r.activeVehicles > 0 ? (
                       <span className="sh-pill sh-pill-ok tabular-nums">
-                        <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                        <span className="w-1.5 h-1.5 bg-current" />
                         {r.activeVehicles} active
                       </span>
                     ) : (
@@ -199,10 +199,10 @@ export function RouteDetailPage() {
     refetchInterval: 25_000,
   });
 
-  if (isLoading) return <div className="max-w-6xl mx-auto p-6 text-sm">Loading route…</div>;
+  if (isLoading) return <div className="sh-page text-sm">Loading route…</div>;
   if (error || !data) {
     return (
-      <div className="max-w-6xl mx-auto p-6 text-sm" style={{ color: "var(--status-err)" }}>
+      <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
         Failed to load route: {(error as Error)?.message ?? "Not found"}
       </div>
     );
@@ -223,20 +223,20 @@ export function RouteDetailPage() {
   const fav = isFavorite(agencyId, "route", routeId);
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div className="space-y-1">
-          <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+          <div className="sh-kicker">
             <Link to="/routes">Routes</Link> / {agencyId}
           </div>
           <div className="flex items-center gap-3">
             <span
               className="sh-route-shield text-white text-base px-3 py-1"
-              style={{ backgroundColor: data.route.color || "#B91C1C" }}
+              style={{ backgroundColor: data.route.color || "#E2001A" }}
             >
               {data.route.shortName}
             </span>
-            <h1 className="text-2xl font-extrabold tracking-tight m-0">{data.route.longName}</h1>
+            <h1 className="sh-title">{data.route.longName}</h1>
           </div>
           <div className="text-xs flex flex-wrap gap-3 pt-0.5" style={{ color: "var(--text-muted)" }}>
             <span>Geometry: <strong>{data.route.geometrySource}</strong></span>
@@ -281,7 +281,7 @@ export function RouteDetailPage() {
             <div
               key={a.id}
               className="sh-card p-3.5 text-sm flex items-start gap-2.5"
-              style={{ background: "var(--gold-surface)" }}
+              style={{ background: "var(--signal-yellow)", color: "#000" }}
             >
               <AlertTriangle size={16} className="shrink-0 mt-0.5" />
               <div>
@@ -304,7 +304,7 @@ export function RouteDetailPage() {
       />
 
       <section className="space-y-2.5">
-        <h2 className="text-base font-bold m-0">Active Vehicles ({data.activeVehicles.length})</h2>
+        <h2 className="sh-section-title">Active Vehicles ({data.activeVehicles.length})</h2>
         <div className="sh-table-wrap">
           <table className="sh-table">
             <thead>
@@ -358,7 +358,7 @@ export function RouteDetailPage() {
 
       {data.stops.length > 0 && (
         <section className="space-y-2.5">
-          <h2 className="text-base font-bold m-0 flex items-center gap-2">
+          <h2 className="sh-section-title flex items-center gap-2">
             <MapPin size={16} /> Stops ({data.stops.length})
           </h2>
           <div className="sh-table-wrap max-h-96 overflow-y-auto">
@@ -391,7 +391,7 @@ export function RouteDetailPage() {
       {data.trips.length > 0 && (
         <section className="space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-base font-bold m-0">Scheduled Trips ({filteredTrips.length})</h2>
+            <h2 className="sh-section-title">Scheduled Trips ({filteredTrips.length})</h2>
             {data.route.directions.length > 0 && (
               <select
                 value={selectedDir}

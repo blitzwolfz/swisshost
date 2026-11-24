@@ -24,7 +24,7 @@ const DARK_STYLE = "https://tiles.openfreemap.org/styles/dark";
  * Generates crisp HiDPI directional transit marker sprites for WebGL MapLibre symbol layers.
  * Zero DOM overhead — handles 1,000+ moving vehicles smoothly at 60fps.
  */
-function createVehicleSprite(fill: string, stroke: string, arrow: boolean): ImageData {
+function createVehicleSprite(fill: string, stroke: string, arrow: boolean, inner = "#FFFFFF"): ImageData {
   const size = 64;
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -35,11 +35,7 @@ function createVehicleSprite(fill: string, stroke: string, arrow: boolean): Imag
   const cx = size / 2;
   const cy = size / 2 + 3;
 
-  // Soft drop shadow
   ctx.save();
-  ctx.shadowColor = "rgba(0,0,0,0.32)";
-  ctx.shadowBlur = 5;
-  ctx.shadowOffsetY = 2;
 
   if (arrow) {
     // Directional teardrop / pointer chevron pointing North (0 deg)
@@ -62,7 +58,7 @@ function createVehicleSprite(fill: string, stroke: string, arrow: boolean): Imag
     ctx.lineTo(cx, 24.5);
     ctx.lineTo(cx - 5.5, 27);
     ctx.closePath();
-    ctx.fillStyle = "#FFFFFF";
+    ctx.fillStyle = inner;
     ctx.fill();
   } else {
     ctx.beginPath();
@@ -76,7 +72,7 @@ function createVehicleSprite(fill: string, stroke: string, arrow: boolean): Imag
 
     ctx.beginPath();
     ctx.arc(cx, size / 2, 4.5, 0, Math.PI * 2);
-    ctx.fillStyle = "#FFFFFF";
+    ctx.fillStyle = inner;
     ctx.fill();
   }
 
@@ -160,17 +156,18 @@ export function TransitMap({
 
     const setupLayers = () => {
       // Register directional WebGL sprites
-      const sprites: Array<[string, string, string, boolean]> = [
-        ["veh-live-arrow", "#B91C1C", "#FFFFFF", true],
-        ["veh-live-dot", "#B91C1C", "#FFFFFF", false],
-        ["veh-stale-arrow", "#64748B", "#E2E8F0", true],
-        ["veh-stale-dot", "#64748B", "#E2E8F0", false],
-        ["veh-selected-arrow", "#FF0000", "#FACC15", true],
-        ["veh-selected-dot", "#FF0000", "#FACC15", false],
+      // Live = signal red, stale = concrete grey, selected = platform yellow with black ink
+      const sprites: Array<[string, string, string, boolean, string]> = [
+        ["veh-live-arrow", "#E2001A", "#FFFFFF", true, "#FFFFFF"],
+        ["veh-live-dot", "#E2001A", "#FFFFFF", false, "#FFFFFF"],
+        ["veh-stale-arrow", "#6B6B6B", "#FFFFFF", true, "#FFFFFF"],
+        ["veh-stale-dot", "#6B6B6B", "#FFFFFF", false, "#FFFFFF"],
+        ["veh-selected-arrow", "#FFD100", "#000000", true, "#000000"],
+        ["veh-selected-dot", "#FFD100", "#000000", false, "#000000"],
       ];
-      for (const [name, fill, stroke, arrow] of sprites) {
+      for (const [name, fill, stroke, arrow, inner] of sprites) {
         if (!map.hasImage(name)) {
-          map.addImage(name, createVehicleSprite(fill, stroke, arrow), { pixelRatio: 2 });
+          map.addImage(name, createVehicleSprite(fill, stroke, arrow, inner), { pixelRatio: 2 });
         }
       }
 
@@ -182,7 +179,7 @@ export function TransitMap({
           source: "route-shape",
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": resolvedTheme === "dark" ? "#0f0f11" : "#ffffff",
+            "line-color": resolvedTheme === "dark" ? "#000000" : "#ffffff",
             "line-width": 7,
             "line-opacity": 0.75,
           },
@@ -193,9 +190,9 @@ export function TransitMap({
           source: "route-shape",
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": "#B91C1C",
+            "line-color": "#E2001A",
             "line-width": 4,
-            "line-opacity": 0.92,
+            "line-opacity": 1,
           },
         });
       }
@@ -208,7 +205,7 @@ export function TransitMap({
           source: "replay-trail",
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": "#D97706",
+            "line-color": resolvedTheme === "dark" ? "#FFD100" : "#000000",
             "line-width": 4,
             "line-dasharray": [2, 1.2],
           },
@@ -225,7 +222,7 @@ export function TransitMap({
           paint: {
             "circle-radius": 4,
             "circle-color": "#FFFFFF",
-            "circle-stroke-color": "#18181B",
+            "circle-stroke-color": "#000000",
             "circle-stroke-width": 1.6,
           },
         });
@@ -246,7 +243,7 @@ export function TransitMap({
           source: "vehicles",
           filter: ["has", "point_count"],
           paint: {
-            "circle-color": "#B91C1C",
+            "circle-color": "#E2001A",
             "circle-radius": ["step", ["get", "point_count"], 16, 25, 20, 100, 24],
             "circle-stroke-width": 2.5,
             "circle-stroke-color": "#FFFFFF",
@@ -407,8 +404,8 @@ export function TransitMap({
   return (
     <div
       ref={containerRef}
-      className={`w-full overflow-hidden ${rounded ? "rounded-xl border" : ""} ${heightClass}`}
-      style={rounded ? { borderColor: "var(--border)" } : undefined}
+      className={`w-full overflow-hidden ${rounded ? "border" : ""} ${heightClass}`}
+      style={rounded ? { borderColor: "var(--ink)" } : undefined}
       aria-label="Interactive transit map"
     />
   );

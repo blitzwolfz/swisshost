@@ -1,24 +1,28 @@
 {
+  "id": "/",
   "name": "Swisshost Transit",
   "short_name": "Swisshost",
-  "description": "Live public transit vehicle tracking, fleet reference, stop departures, and historical replay.",
-  "start_url": "/",
+  "description": "Live vehicle positions, stop departures, fleet reference and trip history for Guelph Transit, TTC and GO Transit.",
+  "lang": "en-CA",
+  "dir": "ltr",
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
   "background_color": "#FFFFFF",
-  "theme_color": "#B91C1C",
+  "theme_color": "#FFFFFF",
+  "categories": ["travel", "navigation", "utilities"],
   "icons": [
-    {
-      "src": "/icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    { "src": "/icons/logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Live map", "url": "/", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Stops", "url": "/stops", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Favourites", "url": "/favorites", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
   ]
 }

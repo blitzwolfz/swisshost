@@ -44,13 +44,13 @@ export function VehiclesPage() {
   });
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             {effectiveAgency.toUpperCase()} Fleet Registry
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Vehicles</h1>
+          <h1 className="sh-title">Vehicles</h1>
           <p className="text-xs m-0 mt-1 tabular-nums" style={{ color: "var(--text-muted)" }}>
             {data?.total ?? 0} observed vehicles recorded · Unknown manufacturer/model attributes remain honestly labeled unknown.
           </p>
@@ -73,12 +73,12 @@ export function VehiclesPage() {
           <thead>
             <tr>
               <th>
-                <button type="button" className="bg-transparent border-0 font-semibold uppercase tracking-wider text-inherit cursor-pointer p-0" onClick={() => setSortBy("fleet")}>
+                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("fleet")}>
                   Fleet # {sortBy === "fleet" ? "▾" : ""}
                 </button>
               </th>
               <th>
-                <button type="button" className="bg-transparent border-0 font-semibold uppercase tracking-wider text-inherit cursor-pointer p-0" onClick={() => setSortBy("route")}>
+                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("route")}>
                   Route {sortBy === "route" ? "▾" : ""}
                 </button>
               </th>
@@ -87,7 +87,7 @@ export function VehiclesPage() {
               <th>Deviation</th>
               <th>Equipment</th>
               <th>
-                <button type="button" className="bg-transparent border-0 font-semibold uppercase tracking-wider text-inherit cursor-pointer p-0" onClick={() => setSortBy("last_seen")}>
+                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("last_seen")}>
                   Last Seen {sortBy === "last_seen" ? "▾" : ""}
                 </button>
               </th>
@@ -119,7 +119,7 @@ export function VehiclesPage() {
                           to={`/routes/${effectiveAgency}/${encodeURIComponent(v.route_id)}`}
                           className="no-underline hover:no-underline"
                         >
-                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#B91C1C" }}>
+                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
                             {v.route_id}
                           </span>
                         </Link>
@@ -188,10 +188,10 @@ export function VehicleDetailPage() {
     refetchInterval: 20_000,
   });
 
-  if (isLoading) return <div className="max-w-6xl mx-auto p-6 text-sm">Loading vehicle…</div>;
+  if (isLoading) return <div className="sh-page text-sm">Loading vehicle…</div>;
   if (error || !data) {
     return (
-      <div className="max-w-6xl mx-auto p-6 text-sm" style={{ color: "var(--status-err)" }}>
+      <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
         {(error as Error)?.message ?? "Vehicle not found"}
       </div>
     );
@@ -242,21 +242,21 @@ export function VehicleDetailPage() {
       : [];
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div className="space-y-1">
-          <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+          <div className="sh-kicker">
             <Link to="/vehicles">Vehicles</Link> / {agencyId}
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             {l?.route_id ? (
               <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} className="no-underline">
-                <span className="sh-route-shield text-white text-sm px-2.5 py-1" style={{ backgroundColor: "#B91C1C" }}>
+                <span className="sh-route-shield text-white text-sm px-2.5 py-1" style={{ backgroundColor: "#E2001A" }}>
                   Route {String(l.route_id)}
                 </span>
               </Link>
             ) : null}
-            <h1 className="text-2xl font-extrabold tracking-tight m-0 tabular-nums">Vehicle #{fleetNum}</h1>
+            <h1 className="sh-title tabular-nums">Vehicle #{fleetNum}</h1>
             <span className={`sh-pill sh-pill-${delayInfo.tone}`}>{delayInfo.text}</span>
           </div>
           <div className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -423,7 +423,7 @@ export function VehicleDetailPage() {
                     <td>
                       {a.route_id ? (
                         <Link to={`/routes/${agencyId}/${encodeURIComponent(a.route_id)}`}>
-                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#B91C1C" }}>
+                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
                             {a.route_id}
                           </span>
                         </Link>

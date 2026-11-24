@@ -54,10 +54,10 @@ export function TripDetailPage() {
     refetchInterval: 20_000,
   });
 
-  if (isLoading) return <div className="max-w-5xl mx-auto p-4 text-sm">Loading trip…</div>;
+  if (isLoading) return <div className="sh-page text-sm">Loading trip…</div>;
   if (error || !data) {
     return (
-      <div className="max-w-5xl mx-auto p-4 text-sm" style={{ color: "var(--status-err)" }}>
+      <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
         {(error as Error)?.message ?? "Trip not found"}
       </div>
     );
@@ -66,10 +66,10 @@ export function TripDetailPage() {
   return (
     <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4 space-y-5">
       <div>
-        <div className="text-xs uppercase" style={{ color: "var(--text-muted)" }}>
+        <div className="sh-kicker">
           Trip / {agencyId} / {data.serviceDate}
         </div>
-        <h1 className="text-2xl font-bold m-0 mt-0.5">Trip {data.tripId}</h1>
+        <h1 className="sh-title">Trip {data.tripId}</h1>
         <div className="text-xs mt-1 space-x-3" style={{ color: "var(--text-muted)" }}>
           {data.trip?.route_id ? (
             <Link to={`/routes/${agencyId}/${encodeURIComponent(String(data.trip.route_id))}`}>
@@ -86,13 +86,13 @@ export function TripDetailPage() {
       </div>
 
       {data.note && (
-        <div className="sh-surface rounded-md p-3 text-xs" style={{ color: "var(--text-muted)" }}>
+        <div className="sh-surface p-3 text-xs" style={{ color: "var(--text-muted)" }}>
           {data.note}
         </div>
       )}
 
       {data.liveVehicle && (
-        <div className="sh-surface rounded-md p-3 text-sm flex flex-wrap items-center justify-between gap-2">
+        <div className="sh-surface p-3 text-sm flex flex-wrap items-center justify-between gap-2">
           <div>
             Currently assigned to{" "}
             <Link to={`/vehicles/${agencyId}/${encodeURIComponent(String(data.liveVehicle.vehicle_id))}`}>
@@ -201,16 +201,16 @@ export function BlockDetailPage() {
       }>(`/api/v1/agencies/${agencyId}/blocks/${encodeURIComponent(blockId)}`),
   });
 
-  if (isLoading) return <div className="max-w-5xl mx-auto p-4 text-sm">Loading block…</div>;
-  if (error || !data) return <div className="max-w-5xl mx-auto p-4 text-sm">Block not found.</div>;
+  if (isLoading) return <div className="sh-page text-sm">Loading block…</div>;
+  if (error || !data) return <div className="sh-page text-sm">Block not found.</div>;
 
   return (
     <div className="max-w-5xl mx-auto px-3 sm:px-4 py-4 space-y-4">
       <div>
-        <div className="text-xs uppercase" style={{ color: "var(--text-muted)" }}>
+        <div className="sh-kicker">
           Block / {agencyId} / {data.serviceDate}
         </div>
-        <h1 className="text-2xl font-bold m-0 mt-0.5">Block {data.blockId}</h1>
+        <h1 className="sh-title">Block {data.blockId}</h1>
         <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{data.note}</p>
       </div>
 

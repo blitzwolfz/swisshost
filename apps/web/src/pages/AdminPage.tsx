@@ -87,7 +87,7 @@ export default function AdminPage() {
   };
 
   if (authLoading) {
-    return <div className="max-w-5xl mx-auto p-6 text-sm">Checking admin session…</div>;
+    return <div className="sh-page text-sm">Checking admin session…</div>;
   }
 
   // Clean Password Setup or Password Login Screen (Zero passkeys, zero Bearer tokens to copy)
@@ -97,11 +97,11 @@ export default function AdminPage() {
       <div className="max-w-md mx-auto w-full px-4 py-12">
         <form onSubmit={handleAuthSubmit} className="sh-card p-6 space-y-4">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
+            <div className="w-9 h-9 flex items-center justify-center" style={{ background: "var(--primary-soft)", color: "var(--primary)" }}>
               <Lock size={18} />
             </div>
             <div>
-              <h1 className="text-lg font-extrabold tracking-tight m-0">
+              <h1 className="sh-title sh-title-sm">
                 {needsSetup ? "Create Admin Login" : "Admin Sign In"}
               </h1>
               <p className="text-xs m-0" style={{ color: "var(--text-muted)" }}>
@@ -113,7 +113,7 @@ export default function AdminPage() {
           </div>
 
           {message && (
-            <div className="p-2.5 rounded-lg text-xs font-medium" style={{ background: "var(--status-err-bg)", color: "var(--status-err)" }}>
+            <div className="p-2.5 text-xs font-medium" style={{ background: "var(--status-err-bg)", color: "var(--status-err)" }}>
               {message}
             </div>
           )}
@@ -128,7 +128,7 @@ export default function AdminPage() {
                   value={setupCode}
                   onChange={(e) => setSetupCode(e.target.value)}
                   placeholder="6-character code"
-                  className="sh-input w-full font-mono uppercase tracking-widest"
+                  className="sh-input w-full font-mono"
                 />
               </div>
             )}
@@ -167,13 +167,13 @@ export default function AdminPage() {
   const d1Pct = data ? Math.min(100, Math.round((data.quota.d1Writes / Math.max(1, data.quota.d1WriteBudget)) * 100)) : 0;
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker flex items-center gap-1.5">
             <ShieldCheck size={14} /> Signed in as {authStatus.actor}
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Feed Operations &amp; Admin</h1>
+          <h1 className="sh-title">Feed Operations &amp; Admin</h1>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -208,8 +208,8 @@ export default function AdminPage() {
                 <span>Daily D1 Quota ({data.quota.tier})</span>
                 <span className="tabular-nums">{data.quota.d1Writes.toLocaleString()} / {data.quota.d1WriteBudget.toLocaleString()} ({d1Pct}%)</span>
               </div>
-              <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--surface)" }}>
-                <div className="h-full rounded-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "#b91c1c" : "#15803d" }} />
+              <div className="h-2 overflow-hidden" style={{ background: "var(--surface)" }}>
+                <div className="h-full" style={{ width: `${d1Pct}%`, background: d1Pct >= 85 ? "var(--signal)" : "var(--ink)" }} />
               </div>
             </div>
             <div className="sh-card p-4 space-y-1.5 text-xs">
@@ -225,7 +225,7 @@ export default function AdminPage() {
           </div>
 
           <section className="space-y-2.5">
-            <h2 className="text-base font-bold m-0">Feeds ({data.feeds.length})</h2>
+            <h2 className="sh-section-title">Feeds ({data.feeds.length})</h2>
             <div className="sh-table-wrap">
               <table className="sh-table">
                 <thead>
@@ -319,7 +319,7 @@ export default function AdminPage() {
           </section>
 
           <section className="space-y-2.5">
-            <h2 className="text-base font-bold m-0">Audit Log</h2>
+            <h2 className="sh-section-title">Audit Log</h2>
             <div className="sh-table-wrap">
               <table className="sh-table">
                 <thead>

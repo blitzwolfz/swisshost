@@ -1,8 +1,16 @@
-const CACHE_VERSION = "swisshost-v2";
+const CACHE_VERSION = "swisshost-v3";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const DATA_CACHE = `${CACHE_VERSION}-data`;
 
-const SHELL_URLS = ["/", "/manifest.webmanifest", "/icons/favicon-64.png", "/icons/icon-192.png"];
+const SHELL_URLS = [
+  "/",
+  "/manifest.webmanifest",
+  "/icons/logo.svg",
+  "/icons/favicon-64.png",
+  "/icons/icon-192.png",
+  "/icons/maskable-192.png",
+  "/icons/apple-touch-icon.png",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -93,10 +101,18 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // SPA navigation: network-first with cached shell fallback
+  // SPA navigation: network-first, refresh the cached shell, fall back to it offline
   if (request.mode === "navigate") {
     event.respondWith(
-      fetch(request).catch(() => caches.match("/") || new Response("Offline", { status: 503 }))
+      fetch(request)
+        .then((res) => {
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(STATIC_CACHE).then((c) => c.put("/", clone));
+          }
+          return res;
+        })
+        .catch(async () => (await caches.match("/")) || new Response("Offline", { status: 503 }))
     );
   }
 });

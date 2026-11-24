@@ -173,13 +173,13 @@ export default function HistoryPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             {targetAgency.toUpperCase()} Archive &amp; Replay
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Historical Tracking</h1>
+          <h1 className="sh-title">Historical Tracking</h1>
           <p className="text-xs m-0 mt-1 tabular-nums" style={{ color: "var(--text-muted)" }}>
             {data?.timezone ?? "America/Toronto"} · Earliest recorded observation:{" "}
             {data?.earliestAvailableAt ? new Date(data.earliestAvailableAt).toLocaleString() : "Collection active"}
@@ -245,7 +245,7 @@ export default function HistoryPage() {
             />
 
             {/* Floating Media Scrubber Bar */}
-            <div className="sh-glass mt-3 rounded-xl p-3.5 space-y-2.5">
+            <div className="sh-glass mt-3 p-3.5 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <div className="flex items-center gap-1.5">
                   <button
@@ -294,7 +294,7 @@ export default function HistoryPage() {
                     <XAxis dataKey="time" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} />
                     <Tooltip />
-                    <Area type="monotone" dataKey="speed" stroke="#B91C1C" fill="#B91C1C" fillOpacity={0.14} strokeWidth={2} />
+                    <Area type="monotone" dataKey="speed" stroke="#E2001A" fill="#E2001A" fillOpacity={0.14} strokeWidth={2} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -302,7 +302,7 @@ export default function HistoryPage() {
           )}
 
           <section className="space-y-2">
-            <h2 className="text-base font-bold m-0">Recorded Observations ({points.length})</h2>
+            <h2 className="sh-section-title">Recorded Observations ({points.length})</h2>
             <div className="sh-table-wrap max-h-80 overflow-y-auto">
               <table className="sh-table">
                 <thead>

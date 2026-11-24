@@ -2,6 +2,7 @@ node_modules/
 dist/
 .wrangler/
 .pnpm-store/
+.claude/
 .dev.vars
 .env
 .env.local

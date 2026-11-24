@@ -31,13 +31,13 @@ export function StopsPage() {
   });
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div>
-          <div className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--primary)" }}>
+          <div className="sh-kicker">
             {effectiveAgency.toUpperCase()} Stations &amp; Stops
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 mt-0.5">Stops</h1>
+          <h1 className="sh-title">Stops</h1>
           <p className="text-xs m-0 mt-1" style={{ color: "var(--text-muted)" }}>
             Look up any stop by name or stop code for live departure boards, predictions, and approaching vehicles.
           </p>
@@ -145,10 +145,10 @@ export function StopDetailPage() {
     refetchInterval: 20_000,
   });
 
-  if (isLoading) return <div className="max-w-6xl mx-auto p-6 text-sm">Loading departures…</div>;
+  if (isLoading) return <div className="sh-page text-sm">Loading departures…</div>;
   if (error || !data) {
     return (
-      <div className="max-w-6xl mx-auto p-6 text-sm" style={{ color: "var(--status-err)" }}>
+      <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
         {(error as Error)?.message ?? "Failed to load stop"}
       </div>
     );
@@ -157,13 +157,13 @@ export function StopDetailPage() {
   const fav = isFavorite(agencyId, "stop", stopId);
 
   return (
-    <div className="max-w-6xl mx-auto w-full px-3 sm:px-6 py-6 space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="sh-page">
+      <div className="sh-page-head">
         <div className="space-y-1">
-          <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+          <div className="sh-kicker">
             <Link to="/stops">Stops</Link> / {agencyId}
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight m-0 flex flex-wrap items-center gap-2">
+          <h1 className="sh-title flex flex-wrap items-center gap-2">
             {data.stop.name}
             {data.stop.stop_code && (
               <span className="sh-pill sh-pill-muted font-mono">#{data.stop.stop_code}</span>
@@ -192,7 +192,7 @@ export function StopDetailPage() {
 
       {/* Swiss Station-Style Live Departure Board (Departures First — PRD §3.1) */}
       <section className="space-y-2.5">
-        <h2 className="text-base font-bold m-0 flex items-center gap-2">
+        <h2 className="sh-section-title flex items-center gap-2">
           <Clock size={16} style={{ color: "var(--primary)" }} /> Live Departures
         </h2>
         <div className="sh-card overflow-hidden divide-y" style={{ borderColor: "var(--border)" }}>
@@ -211,7 +211,7 @@ export function StopDetailPage() {
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <Link to={`/routes/${agencyId}/${encodeURIComponent(d.routeId)}`} className="no-underline">
-                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#B91C1C" }}>
+                      <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
                         {d.routeId}
                       </span>
                     </Link>
@@ -268,7 +268,7 @@ export function StopDetailPage() {
 
       {data.approachingVehicles.length > 0 && (
         <section className="space-y-2.5">
-          <h2 className="text-base font-bold m-0">Approaching Vehicles (within 2.5 km)</h2>
+          <h2 className="sh-section-title">Approaching Vehicles (within 2.5 km)</h2>
           <div className="sh-table-wrap">
             <table className="sh-table">
               <thead>
