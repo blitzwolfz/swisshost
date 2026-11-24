@@ -1174,13 +1174,13 @@ app.get("/api/v1/geocode", async (c) => {
     kind: "stop",
   }));
 
-  // Complement with OpenStreetMap Nominatim scoped to Southern Ontario
+  // Complement with OpenStreetMap Nominatim scoped to Ontario (Southern + Northwestern)
   try {
     const nomUrl = new URL("https://nominatim.openstreetmap.org/search");
     nomUrl.searchParams.set("q", `${q}, Ontario, Canada`);
     nomUrl.searchParams.set("format", "jsonv2");
     nomUrl.searchParams.set("limit", "5");
-    nomUrl.searchParams.set("viewbox", "-81.5,44.6,-78.2,42.8");
+    nomUrl.searchParams.set("viewbox", "-95.2,50.5,-74.3,41.7");
     nomUrl.searchParams.set("bounded", "1");
 
     const resp = await fetch(nomUrl.toString(), {

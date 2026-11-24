@@ -53,7 +53,7 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
     const fetchSnapshot = async (mode: "connecting" | "polling" = "polling") => {
       try {
         if (agencyId === "all") {
-          const agencyIds = ["guelph", "ttc", "go"];
+          const agencyIds = ["guelph", "ttc", "go", "thunderbay"];
           const responses = await Promise.all(
             agencyIds.map((id) =>
               apiJson<{

@@ -310,7 +310,7 @@ export default function RiderHomePage() {
           <p className="text-sm" style={{ color: "var(--text-muted)" }}>Finding stops near you…</p>
         ) : (nearby?.nearbyStops.length ?? 0) === 0 ? (
           <div className="sh-card p-5 text-sm" style={{ color: "var(--text-muted)" }}>
-            No Guelph Transit, TTC, or GO Transit stops found within 1 km of your location.
+            No Guelph Transit, TTC, GO Transit, or Thunder Bay Transit stops found within 1 km of your location.
           </div>
         ) : (
           <div className="sh-card divide-y" style={{ borderColor: "var(--border)" }}>

@@ -33,6 +33,11 @@ const AGENCIES: AgencySeedSpec[] = [
     feedId: "ttc-static",
     url: "https://ckan0.cf.opendata.inter.prod-toronto.ca/dataset/bd4809dd-e289-4de8-bbde-c5c00dafbf4f/resource/28514055-d011-4ed7-8bb0-97961dfe2b66/download/SurfaceGTFS.ZIP",
   },
+  {
+    id: "thunderbay",
+    feedId: "thunderbay-static",
+    url: "http://api.nextlift.ca/gtfs.zip",
+  },
 ];
 
 function sqlEsc(val: string | number | null | undefined): string {

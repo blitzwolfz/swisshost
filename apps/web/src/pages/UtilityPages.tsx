@@ -489,6 +489,7 @@ export function AccountPage() {
                 <option value="guelph">Guelph Transit</option>
                 <option value="ttc">TTC</option>
                 <option value="go">GO Transit</option>
+                <option value="thunderbay">Thunder Bay Transit</option>
               </select>
             </div>
             <div>

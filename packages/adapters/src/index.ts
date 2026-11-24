@@ -28,6 +28,8 @@ const ALLOWED_HOST_SUFFIXES = [
   "arcgis.com",
   "transit.land",
   "mobilitydatabase.org",
+  "nextlift.ca",
+  "thunderbay.ca",
 ];
 
 /**

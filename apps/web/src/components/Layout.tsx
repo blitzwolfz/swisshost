@@ -142,6 +142,7 @@ export function Layout() {
           { id: "guelph", label: "Guelph", fullName: "Guelph Transit", count: 0 },
           { id: "ttc", label: "TTC", fullName: "Toronto Transit Commission", count: 0 },
           { id: "go", label: "GO", fullName: "GO Transit", count: 0 },
+          { id: "thunderbay", label: "T-Bay", fullName: "Thunder Bay Transit", count: 0 },
           { id: "all", label: "All", fullName: "All agencies", count: 0 },
         ];
 

@@ -2,6 +2,7 @@ import type { AgencyConfig } from "@swisshost/contracts";
 import guelphConfig from "../../../config/agencies/guelph.json";
 import ttcConfig from "../../../config/agencies/ttc.json";
 import goConfig from "../../../config/agencies/go-transit.json";
+import thunderbayConfig from "../../../config/agencies/thunderbay.json";
 import type { FeedSchedulerDO } from "../../collector/src/feed-scheduler-do";
 import type { AgencyLiveDO } from "../../live/src/agency-live-do";
 
@@ -34,6 +35,7 @@ export const BUILTIN_AGENCIES: AgencyConfig[] = [
   guelphConfig as AgencyConfig,
   ttcConfig as AgencyConfig,
   goConfig as AgencyConfig,
+  thunderbayConfig as AgencyConfig,
 ];
 
 export function getBudgets(env: Env) {

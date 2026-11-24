@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Swisshost Transit",
   "short_name": "Swisshost",
-  "description": "Live vehicle positions, stop departures, fleet reference and trip history for Guelph Transit, TTC and GO Transit.",
+  "description": "Live vehicle positions, stop departures, fleet reference and trip history for Guelph Transit, TTC, GO Transit and Thunder Bay Transit.",
   "lang": "en-CA",
   "dir": "ltr",
   "start_url": "/?source=pwa",

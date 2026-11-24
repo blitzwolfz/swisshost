@@ -1,0 +1,63 @@
+{
+  "id": "thunderbay",
+  "name": "Thunder Bay Transit",
+  "shortName": "T-Bay",
+  "region": "Ontario, Canada",
+  "timezone": "America/Toronto",
+  "modes": ["bus"],
+  "center": [-89.2477, 48.3809],
+  "defaultZoom": 12.2,
+  "enabled": true,
+  "attribution": "Data provided by City of Thunder Bay Open Data / NextLift (Thunder Bay Transit)",
+  "licenseUrl": "https://www.thunderbay.ca/en/city-services/developers---open-data.aspx",
+  "archivePolicy": "permitted",
+  "capabilities": {
+    "staticSchedule": true,
+    "vehiclePositions": true,
+    "tripUpdates": true,
+    "serviceAlerts": true,
+    "historicalArchive": true
+  },
+  "feeds": [
+    {
+      "id": "thunderbay-static",
+      "kind": "gtfs_static",
+      "adapter": "gtfs-static",
+      "url": "http://api.nextlift.ca/gtfs.zip",
+      "refreshSeconds": 86400,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 172800
+    },
+    {
+      "id": "thunderbay-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://nextlift.ca/gtfs-realtime/vehicleupdates.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "thunderbay-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://nextlift.ca/gtfs-realtime/tripupdates.pb",
+      "refreshSeconds": 60,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "thunderbay-alerts",
+      "kind": "service_alerts",
+      "adapter": "gtfs-rt",
+      "url": "https://nextlift.ca/gtfs-realtime/alerts.pb",
+      "refreshSeconds": 300,
+      "authSecretRef": null,
+      "enabled": true,
+      "staleAfterSeconds": 600
+    }
+  ]
+}
