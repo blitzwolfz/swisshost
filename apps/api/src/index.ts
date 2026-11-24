@@ -20,7 +20,7 @@ import { FeedSchedulerDO } from "../../collector/src/feed-scheduler-do";
 import { AgencyLiveDO } from "../../live/src/agency-live-do";
 import { runTwelveHourArchive, runWatchdog } from "../../jobs/src/index";
 import type { Env } from "./env";
-import { BUILTIN_AGENCIES, getBudgets, hashPassword, sha256Hex, verifyPassword } from "./env";
+import { BUILTIN_AGENCIES, getBudgets, hashPassword, sha256Hex, verifyPassword, withActiveDb } from "./env";
 
 export { FeedSchedulerDO, AgencyLiveDO };
 
@@ -2550,12 +2550,15 @@ app.all("*", async (c) => {
 });
 
 export default {
-  fetch: app.fetch,
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    return app.fetch(request, withActiveDb(env), ctx);
+  },
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const activeEnv = withActiveDb(env);
     if (controller.cron === "0 0,12 * * *") {
-      ctx.waitUntil(runTwelveHourArchive(env));
+      ctx.waitUntil(runTwelveHourArchive(activeEnv));
     } else {
-      ctx.waitUntil(runWatchdog(env));
+      ctx.waitUntil(runWatchdog(activeEnv));
     }
   },
 } satisfies ExportedHandler<Env>;

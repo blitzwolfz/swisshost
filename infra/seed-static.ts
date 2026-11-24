@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { unzipSync } from "fflate";
 import { parseGtfsTimeToSeconds } from "../packages/transit-core/src/index";
+import { createTursoD1Adapter } from "../packages/database/src/index";
 
 const KV_NAMESPACE_ID = "dafb7b7092f94a2097793fdfb21b8e0f";
 const D1_DB_NAME = "swisshost-db";
@@ -130,11 +131,28 @@ function runWrangler(args: string[]): void {
   execFileSync(wranglerBin, args, { stdio: "inherit" });
 }
 
-async function seedAgency(spec: AgencySeedSpec, remote: boolean): Promise<void> {
+async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean): Promise<void> {
+  const tursoUrl = process.env.TURSO_DATABASE_URL?.trim();
+  const tursoToken = process.env.TURSO_AUTH_TOKEN?.trim();
+  const tursoDb = tursoUrl && tursoToken ? createTursoD1Adapter(tursoUrl, tursoToken) : null;
+
   const zipBytes = await fetchZip(spec);
   const contentHash = crypto.createHash("sha256").update(zipBytes).digest("hex").slice(0, 16);
   const versionId = `${spec.id}-${contentHash}`;
   const now = new Date().toISOString();
+
+  // Skip re-importing if Turso already has this exact ZIP content hash active (0 wasted row writes!)
+  if (tursoDb && !force) {
+    const active = await tursoDb
+      .prepare("SELECT content_hash FROM feed_versions WHERE agency_id = ? AND status = 'active' LIMIT 1")
+      .bind(spec.id)
+      .first<{ content_hash: string }>()
+      .catch(() => null);
+    if (active?.content_hash === contentHash) {
+      console.log(`[${spec.id}] Static GTFS unchanged (${contentHash}) — skipping import.`);
+      return;
+    }
+  }
 
   console.log(`[${spec.id}] Unzipping core GTFS files...`);
   const files = unzipSync(zipBytes, {
@@ -515,25 +533,35 @@ async function seedAgency(spec: AgencySeedSpec, remote: boolean): Promise<void> 
   sqlStatements.push(`DELETE FROM stops WHERE agency_id = ${sqlEsc(spec.id)} AND version_id != ${sqlEsc(versionId)};`);
   sqlStatements.push(`DELETE FROM routes WHERE agency_id = ${sqlEsc(spec.id)} AND version_id != ${sqlEsc(versionId)};`);
 
-  // Write into <= 800KB SQL chunk files and execute via Wrangler
-  let chunkIdx = 0;
-  let buf = "";
-  const flushChunk = () => {
-    if (!buf) return;
-    const f = path.join(tmpDir, `chunk-${chunkIdx++}.sql`);
-    fs.writeFileSync(f, buf);
-    console.log(`[${spec.id}] Executing D1 SQL chunk ${chunkIdx} (${(buf.length / 1024).toFixed(0)} KB)...`);
-    runWrangler(["d1", "execute", D1_DB_NAME, remote ? "--remote" : "--local", "--file", f, "-y"]);
-    buf = "";
-  };
-
-  for (const stmt of sqlStatements) {
-    if (buf.length + stmt.length > 750_000) {
-      flushChunk();
+  if (tursoDb) {
+    // Execute SQL statements directly against Turso over Hrana HTTP pipeline in batches of 20
+    console.log(`[${spec.id}] Writing ${sqlStatements.length} SQL statements directly to Turso...`);
+    for (let i = 0; i < sqlStatements.length; i += 20) {
+      const slice = sqlStatements.slice(i, i + 20);
+      await tursoDb.batch(slice.map((sql) => tursoDb.prepare(sql)));
     }
-    buf += stmt + "\n";
+    console.log(`[${spec.id}] Turso static GTFS write complete.`);
+  } else {
+    // Write into <= 800KB SQL chunk files and execute via Wrangler D1
+    let chunkIdx = 0;
+    let buf = "";
+    const flushChunk = () => {
+      if (!buf) return;
+      const f = path.join(tmpDir, `chunk-${chunkIdx++}.sql`);
+      fs.writeFileSync(f, buf);
+      console.log(`[${spec.id}] Executing D1 SQL chunk ${chunkIdx} (${(buf.length / 1024).toFixed(0)} KB)...`);
+      runWrangler(["d1", "execute", D1_DB_NAME, remote ? "--remote" : "--local", "--file", f, "-y"]);
+      buf = "";
+    };
+
+    for (const stmt of sqlStatements) {
+      if (buf.length + stmt.length > 750_000) {
+        flushChunk();
+      }
+      buf += stmt + "\n";
+    }
+    flushChunk();
   }
-  flushChunk();
 
   // Upload KV lookup blobs (3 total KV writes per agency!)
   if (remote) {
@@ -550,16 +578,17 @@ async function seedAgency(spec: AgencySeedSpec, remote: boolean): Promise<void> 
 async function main() {
   const args = process.argv.slice(2);
   const remote = !args.includes("--local");
+  const force = args.includes("--force");
   const filterArg = args.find((a) => !a.startsWith("--"));
   const targets = filterArg ? AGENCIES.filter((a) => a.id === filterArg) : AGENCIES;
 
   if (targets.length === 0) {
-    console.error(`Unknown agency "${filterArg}". Choose from: guelph, go, ttc`);
+    console.error(`Unknown agency "${filterArg}". Choose from: ${AGENCIES.map((a) => a.id).join(", ")}`);
     process.exit(1);
   }
 
   for (const spec of targets) {
-    await seedAgency(spec, remote);
+    await seedAgency(spec, remote, force);
   }
 }
 

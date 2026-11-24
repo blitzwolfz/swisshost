@@ -4,7 +4,7 @@ import { decodeGtfsRtFeed, decodeUmoXmlVehicles, validateFeedUrl } from "@swissh
 import { getQuotaStatus } from "@swisshost/database";
 import { processNormalizedBatch } from "../../processor/src/index";
 import type { Env } from "../../api/src/env";
-import { getBudgets } from "../../api/src/env";
+import { getBudgets, withActiveDb } from "../../api/src/env";
 
 export interface SchedulerFeedConfig {
   id: string;
@@ -36,7 +36,7 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   private dlqBatches: Array<{ id: string; receivedAt: string; error: string }> = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+    super(ctx, withActiveDb(env));
     // Read-only hydration from any previously persisted config (0 SQLite writes on wake)
     ctx.blockConcurrencyWhile(async () => {
       try {

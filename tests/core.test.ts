@@ -11,6 +11,7 @@ import {
   computeScheduleAdherence,
   predictStopArrival,
 } from "@swisshost/analytics";
+import { createTursoD1Adapter, splitSqlStatements } from "@swisshost/database";
 import {
   detectStopEvent,
   evaluateTripMatch,
@@ -231,5 +232,75 @@ describe("Analytics — Adherence, Headways, ETA Predictions, and Backtesting", 
     ]);
     expect(report.maeSec).toBe(15);
     expect(report.scheduleBaselineMaeSec).toBe(85);
+  });
+});
+
+describe("Database — Turso Hrana v2 D1-Compatible Adapter", () => {
+  it("encodes parameters, decodes typed rows, and sends batches in one HTTP pipeline request", async () => {
+    const calls: Array<{ url: string; body: unknown; auth: string | null }> = [];
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "{}")) as { requests: unknown[] };
+      calls.push({
+        url: String(input),
+        body: parsed,
+        auth: new Headers(init?.headers).get("Authorization"),
+      });
+      const execCount = parsed.requests.length - 1;
+      return new Response(
+        JSON.stringify({
+          results: [
+            ...Array.from({ length: execCount }, () => ({
+              type: "ok",
+              response: {
+                type: "execute",
+                result: {
+                  cols: [{ name: "id" }, { name: "lat" }, { name: "active" }, { name: "note" }],
+                  rows: [
+                    [
+                      { type: "text", value: "thunderbay" },
+                      { type: "float", value: 48.3809 },
+                      { type: "integer", value: "1" },
+                      { type: "null" },
+                    ],
+                  ],
+                  affected_row_count: 1,
+                  last_insert_rowid: "42",
+                },
+              },
+            })),
+            { type: "ok", response: { type: "close" } },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    const db = createTursoD1Adapter("libsql://swisshost-sam.turso.io", "tok_test_123", mockFetch);
+    const first = await db
+      .prepare("SELECT id, lat, active, note FROM agencies WHERE id = ? AND enabled = ?")
+      .bind("thunderbay", true)
+      .first<{ id: string; lat: number; active: number; note: null }>();
+
+    expect(calls[0]!.url).toBe("https://swisshost-sam.turso.io/v2/pipeline");
+    expect(calls[0]!.auth).toBe("Bearer tok_test_123");
+    expect(first).toEqual({ id: "thunderbay", lat: 48.3809, active: 1, note: null });
+
+    const batchRes = await db.batch([
+      db.prepare("INSERT INTO t VALUES (?, ?)").bind(1, 3.14),
+      db.prepare("INSERT INTO t VALUES (?, ?)").bind(2, null),
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(batchRes).toHaveLength(2);
+    expect(batchRes[0]!.meta.changes).toBe(1);
+  });
+
+  it("splits multi-statement SQL migrations while ignoring comments and semicolons in strings", () => {
+    const stmts = splitSqlStatements(`
+      -- Comment; ignored
+      CREATE TABLE a (id TEXT DEFAULT 'x;y');
+      CREATE INDEX idx_a ON a(id);
+    `);
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0]).toContain("'x;y'");
   });
 });

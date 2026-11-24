@@ -1,4 +1,5 @@
 import type { AgencyConfig } from "@swisshost/contracts";
+import { createTursoD1Adapter } from "@swisshost/database";
 import guelphConfig from "../../../config/agencies/guelph.json";
 import ttcConfig from "../../../config/agencies/ttc.json";
 import goConfig from "../../../config/agencies/go-transit.json";
@@ -26,6 +27,8 @@ export interface Env {
   ADMIN_API_TOKEN?: string;
   GITHUB_ARCHIVE_TOKEN?: string;
   GO_TRANSIT_API_KEY?: string;
+  TURSO_DATABASE_URL?: string;
+  TURSO_AUTH_TOKEN?: string;
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   [secretName: string]: unknown;
@@ -38,9 +41,38 @@ export const BUILTIN_AGENCIES: AgencyConfig[] = [
   thunderbayConfig as AgencyConfig,
 ];
 
+let cachedTursoKey = "";
+let cachedTursoDb: D1Database | null = null;
+
+/**
+ * Returns an Env whose `DB` binding routes to Turso (libSQL) when
+ * `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` secrets are configured, or falls
+ * back transparently to Cloudflare D1 when unset.
+ */
+export function withActiveDb(env: Env): Env {
+  const url = typeof env.TURSO_DATABASE_URL === "string" ? env.TURSO_DATABASE_URL.trim() : "";
+  const token = typeof env.TURSO_AUTH_TOKEN === "string" ? env.TURSO_AUTH_TOKEN.trim() : "";
+  if (!url || !token) return env;
+
+  const key = `${url}::${token.slice(0, 12)}`;
+  if (cachedTursoKey !== key || !cachedTursoDb) {
+    cachedTursoDb = createTursoD1Adapter(url, token);
+    cachedTursoKey = key;
+  }
+
+  const db = cachedTursoDb;
+  return new Proxy(env, {
+    get(target, prop, receiver) {
+      if (prop === "DB") return db;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
 export function getBudgets(env: Env) {
+  const usingTurso = Boolean(env.TURSO_DATABASE_URL && env.TURSO_AUTH_TOKEN);
   return {
-    d1Writes: Number(env.DAILY_D1_WRITE_BUDGET || "80000"),
+    d1Writes: usingTurso ? 300_000 : Number(env.DAILY_D1_WRITE_BUDGET || "80000"),
     doRequests: Number(env.DAILY_DO_REQUEST_BUDGET || "80000"),
     workerRequests: Number(env.DAILY_WORKER_REQUEST_BUDGET || "80000"),
   };
