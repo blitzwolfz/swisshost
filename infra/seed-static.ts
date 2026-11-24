@@ -178,10 +178,10 @@ function runWrangler(args: string[]): void {
   execFileSync(wranglerBin, args, { stdio: "inherit" });
 }
 
-async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean): Promise<void> {
+async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean, kvOnly = false): Promise<void> {
   const tursoUrl = process.env.TURSO_DATABASE_URL?.trim();
   const tursoToken = process.env.TURSO_AUTH_TOKEN?.trim();
-  const tursoDb = tursoUrl && tursoToken ? createTursoD1Adapter(tursoUrl, tursoToken) : null;
+  const tursoDb = !kvOnly && tursoUrl && tursoToken ? createTursoD1Adapter(tursoUrl, tursoToken) : null;
 
   const zipBytes = await fetchZip(spec);
   const contentHash = crypto.createHash("sha256").update(zipBytes).digest("hex").slice(0, 16);
@@ -581,7 +581,9 @@ async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean)
   sqlStatements.push(`DELETE FROM stops WHERE agency_id = ${sqlEsc(spec.id)} AND version_id != ${sqlEsc(versionId)};`);
   sqlStatements.push(`DELETE FROM routes WHERE agency_id = ${sqlEsc(spec.id)} AND version_id != ${sqlEsc(versionId)};`);
 
-  if (tursoDb) {
+  if (kvOnly) {
+    console.log(`[${spec.id}] KV-only mode: skipping SQL writes.`);
+  } else if (tursoDb) {
     // Execute SQL statements directly against Turso over Hrana HTTP pipeline in batches of 20
     console.log(`[${spec.id}] Writing ${sqlStatements.length} SQL statements directly to Turso...`);
     for (let i = 0; i < sqlStatements.length; i += 20) {
@@ -613,10 +615,15 @@ async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean)
 
   // Upload KV lookup blobs (3 total KV writes per agency!)
   if (remote) {
-    console.log(`[${spec.id}] Uploading stop/trip/route lookup blobs to KV...`);
-    runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `stop_lookup:${spec.id}`, "--path", stopKvFile]);
-    runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `trip_lookup:${spec.id}`, "--path", tripKvFile]);
-    runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `routes:${spec.id}`, "--path", routeKvFile]);
+    const canUploadKv = !process.env.CI || Boolean(process.env.CLOUDFLARE_API_TOKEN?.trim());
+    if (canUploadKv) {
+      console.log(`[${spec.id}] Uploading stop/trip/route lookup blobs to KV...`);
+      runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `stop_lookup:${spec.id}`, "--path", stopKvFile]);
+      runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `trip_lookup:${spec.id}`, "--path", tripKvFile]);
+      runWrangler(["kv", "key", "put", "--namespace-id", KV_NAMESPACE_ID, "--remote", `routes:${spec.id}`, "--path", routeKvFile]);
+    } else {
+      console.log(`[${spec.id}] Skipping KV upload in CI (CLOUDFLARE_API_TOKEN not set); Turso static tables updated.`);
+    }
   }
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -627,6 +634,7 @@ async function main() {
   const args = process.argv.slice(2);
   const remote = !args.includes("--local");
   const force = args.includes("--force");
+  const kvOnly = args.includes("--kv-only");
   const filterArg = args.find((a) => !a.startsWith("--"));
   const targets = filterArg ? AGENCIES.filter((a) => a.id === filterArg) : AGENCIES;
 
@@ -635,8 +643,19 @@ async function main() {
     process.exit(1);
   }
 
+  const failures: string[] = [];
   for (const spec of targets) {
-    await seedAgency(spec, remote, force);
+    try {
+      await seedAgency(spec, remote, force, kvOnly);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[${spec.id}] FAILED: ${msg}`);
+      failures.push(`${spec.id}: ${msg}`);
+    }
+  }
+  if (failures.length > 0) {
+    console.error(`Completed with ${failures.length} failure(s):\n${failures.join("\n")}`);
+    process.exit(1);
   }
 }
 
