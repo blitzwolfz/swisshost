@@ -71,7 +71,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     localStorage.setItem("swisshost_theme", theme);
     // Keep the browser / installed-app chrome in step with the header
     document.querySelectorAll('meta[name="theme-color"]').forEach((m) => {
-      m.setAttribute("content", resolvedTheme === "dark" ? "#000000" : "#FFFFFF");
+      m.setAttribute("content", resolvedTheme === "dark" ? "#000000" : "#EDEAE2");
       m.removeAttribute("media");
     });
   }, [theme, resolvedTheme]);

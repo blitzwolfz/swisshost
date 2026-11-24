@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#EDEAE2" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -15,6 +15,12 @@
       content="Live vehicle positions, stop departures, fleet reference and trip history for Guelph Transit, TTC, GO Transit and Thunder Bay Transit."
     />
     <title>Swisshost</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@700&family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,500&display=swap"
+    />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icons/logo.svg" />
     <link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png" />
@@ -26,7 +32,7 @@
           var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
           if (dark) document.documentElement.classList.add("dark");
           var metas = document.querySelectorAll('meta[name="theme-color"]');
-          if (t !== "system") metas.forEach(function (m) { m.setAttribute("content", dark ? "#000000" : "#FFFFFF"); m.removeAttribute("media"); });
+          if (t !== "system") metas.forEach(function (m) { m.setAttribute("content", dark ? "#000000" : "#EDEAE2"); m.removeAttribute("media"); });
         } catch (e) {}
       })();
     </script>
