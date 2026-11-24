@@ -31,10 +31,41 @@ function channel(c: number): number {
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
 }
 
-export function contrastWithWhite(hex: string): number {
+/** Official iconic rail line colours for TTC Subway and GO Transit / UP Express. */
+const OFFICIAL_RAIL_COLORS: Record<string, string> = {
+  "ttc:1": "#F8C300",
+  "ttc:2": "#00923F",
+  "ttc:4": "#A21A68",
+  "ttc:5": "#F26522",
+  "ttc:6": "#6E7B8B",
+  "go:LW": "#8D0E3A",
+  "go:LE": "#C8102E",
+  "go:KI": "#00693E",
+  "go:BR": "#003767",
+  "go:ST": "#794500",
+  "go:MI": "#C45B00",
+  "go:RH": "#007BA7",
+  "go:UP": "#2B4C7E",
+};
+
+function relativeLuminance(hex: string): number {
   const n = parseInt(hex.slice(1), 16);
-  const lum = 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
-  return 1.05 / (lum + 0.05);
+  return 0.2126 * channel((n >> 16) & 255) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+}
+
+export function contrastWithWhite(hex: string): number {
+  return 1.05 / (relativeLuminance(hex) + 0.05);
+}
+
+export function contrastWithInk(hex: string): number {
+  return (relativeLuminance(hex) + 0.05) / 0.062;
+}
+
+/** Pick crisp dark ink or white foreground text for any route colour (e.g. dark ink on TTC Line 1 Yellow). */
+export function routeTextColor(hex: string): string {
+  const norm = normalizeHex(hex);
+  if (!norm) return "#FFFFFF";
+  return contrastWithWhite(norm) >= 4.2 ? "#FFFFFF" : "#16140F";
 }
 
 function hash(text: string): number {
@@ -53,8 +84,11 @@ export function paletteColor(agencyId: string, routeId: string): string {
 /** Resolve the colour for a route; null routeId gets the neutral unassigned grey. */
 export function routeColor(agencyId: string, routeId: string | null | undefined, brand?: string | null): string {
   if (!routeId) return "#5B574D";
+  const cleanId = routeId.trim().toUpperCase().replace(/^[0-9]+-/, "");
+  const official = OFFICIAL_RAIL_COLORS[`${agencyId}:${cleanId}`] ?? OFFICIAL_RAIL_COLORS[`${agencyId}:${routeId.trim()}`];
+  if (official) return official;
   const own = normalizeHex(brand);
-  if (own && contrastWithWhite(own) >= 4.5) return own;
+  if (own && (contrastWithWhite(own) >= 4.2 || contrastWithInk(own) >= 7)) return own;
   return paletteColor(agencyId, routeId);
 }
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { isLiveDeparture, type StopDeparture } from "../lib/api";
+import { routeTextColor } from "../lib/routeColors";
 
 /** Coloured route rectangle with the route number in Archivo Narrow. */
 export function RouteBadge({
@@ -17,7 +18,7 @@ export function RouteBadge({
   return (
     <span
       className={`sh-badge ${size === "lg" ? "sh-badge-lg" : ""}`}
-      style={{ backgroundColor: color }}
+      style={{ backgroundColor: color, color: routeTextColor(color) }}
       title={title}
     >
       {label || "–"}

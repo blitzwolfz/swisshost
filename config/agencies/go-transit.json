@@ -61,6 +61,28 @@
       "refreshSeconds": 180,
       "enabled": true,
       "staleAfterSeconds": 600
+    },
+    {
+      "id": "up-positions",
+      "kind": "vehicle_positions",
+      "adapter": "gtfs-rt",
+      "url": "https://api.openmetrolinx.com/OpenDataAPI/api/V1/UP/Gtfs.proto/Feed/VehiclePosition",
+      "authQueryParam": "key",
+      "authSecretRef": "GO_TRANSIT_API_KEY",
+      "refreshSeconds": 60,
+      "enabled": true,
+      "staleAfterSeconds": 120
+    },
+    {
+      "id": "up-trip-updates",
+      "kind": "trip_updates",
+      "adapter": "gtfs-rt",
+      "url": "https://api.openmetrolinx.com/OpenDataAPI/api/V1/UP/Gtfs.proto/Feed/TripUpdates",
+      "authQueryParam": "key",
+      "authSecretRef": "GO_TRANSIT_API_KEY",
+      "refreshSeconds": 60,
+      "enabled": true,
+      "staleAfterSeconds": 120
     }
   ]
 }

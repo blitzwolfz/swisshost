@@ -32,7 +32,8 @@ const AGENCIES: AgencySeedSpec[] = [
   {
     id: "ttc",
     feedId: "ttc-static",
-    url: "https://ckan0.cf.opendata.inter.prod-toronto.ca/dataset/bd4809dd-e289-4de8-bbde-c5c00dafbf4f/resource/28514055-d011-4ed7-8bb0-97961dfe2b66/download/SurfaceGTFS.ZIP",
+    url: "https://ckan0.cf.opendata.inter.prod-toronto.ca/dataset/7795b45e-e65a-4465-81fc-c36b9dfff169/resource/cfb6b2b8-6191-41e3-bda1-b175c51148cb/download/TTC%20Routes%20and%20Schedules%20Data.zip",
+    fallbackUrl: "https://ckan0.cf.opendata.inter.prod-toronto.ca/dataset/bd4809dd-e289-4de8-bbde-c5c00dafbf4f/resource/28514055-d011-4ed7-8bb0-97961dfe2b66/download/SurfaceGTFS.ZIP",
   },
   {
     id: "thunderbay",
@@ -400,6 +401,7 @@ async function seedAgency(spec: AgencySeedSpec, remote: boolean, force: boolean)
     short_name: r.shortName,
     long_name: r.longName,
     color: r.color,
+    route_type: r.routeType,
   }));
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `swisshost-${spec.id}-`));

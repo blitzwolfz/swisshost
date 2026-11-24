@@ -16,7 +16,11 @@ import {
   computeUpcomingBusesForLeg,
   detectStopEvent,
   evaluateTripMatch,
+  findRailPlanCandidates,
+  generateScheduledRailVehicles,
   getLocalServiceContext,
+  getScheduledRailRideTimeline,
+  inferVehicleMode,
   isServiceActiveOnDate,
   parseGtfsTimeToSeconds,
   projectPointOntoPolyline,
@@ -430,5 +434,75 @@ describe("Trip Planner — Time-Aware Upcoming Buses & Direction Filtering", () 
 
     expect(res.directionValid).toBe(false);
     expect(res.upcomingBuses).toHaveLength(0);
+  });
+});
+
+describe("Rail Networks — TTC Subway & GO Transit Trains", () => {
+  const middayMs = Date.parse("2026-11-24T18:15:00.000Z"); // 1:15 PM EST in Toronto
+
+  it("classifies TTC subway, streetcar, bus, and GO rail vs bus modes accurately", () => {
+    expect(inferVehicleMode("ttc", "1")).toBe("subway");
+    expect(inferVehicleMode("ttc", "2")).toBe("subway");
+    expect(inferVehicleMode("ttc", "4")).toBe("subway");
+    expect(inferVehicleMode("ttc", "504")).toBe("streetcar");
+    expect(inferVehicleMode("ttc", "32")).toBe("bus");
+    expect(inferVehicleMode("go", "01241126-LW", "LW")).toBe("rail");
+    expect(inferVehicleMode("go", "KI")).toBe("rail");
+    expect(inferVehicleMode("go", "UP")).toBe("rail");
+    expect(inferVehicleMode("go", "29")).toBe("bus");
+    expect(inferVehicleMode("go", "99", "99", 2)).toBe("rail");
+  });
+
+  it("generates timetable-estimated TTC Subway and GO Rail trains and yields when live GPS reports", () => {
+    const ttcTrains = generateScheduledRailVehicles("ttc", middayMs);
+    expect(ttcTrains.length).toBeGreaterThan(10);
+    expect(ttcTrains.some((t) => t.routeShortName === "1" && t.vehicleMode === "subway")).toBe(true);
+    expect(ttcTrains.some((t) => t.routeShortName === "2" && t.vehicleMode === "subway")).toBe(true);
+    expect(ttcTrains.every((t) => t.positionSource === "scheduled")).toBe(true);
+
+    const goTrains = generateScheduledRailVehicles("go", middayMs);
+    expect(goTrains.length).toBeGreaterThan(5);
+    expect(goTrains.some((t) => t.routeShortName === "LW" && t.vehicleMode === "rail")).toBe(true);
+    expect(goTrains.some((t) => t.routeShortName === "UP" && t.vehicleMode === "rail")).toBe(true);
+
+    // When live GPS reports on LW, scheduled LW trains are suppressed automatically
+    const goWithLiveLW = generateScheduledRailVehicles("go", middayMs, new Set(["LW"]));
+    expect(goWithLiveLW.some((t) => t.routeShortName === "LW")).toBe(false);
+    expect(goWithLiveLW.some((t) => t.routeShortName === "LE")).toBe(true);
+
+    // Ride timeline works for any generated train
+    const sample = ttcTrains[0]!;
+    const timeline = getScheduledRailRideTimeline("ttc", sample.vehicleId, middayMs);
+    expect(timeline).not.toBeNull();
+    expect(timeline!.stops.length).toBeGreaterThan(3);
+    expect(timeline!.routeShape.coordinates.length).toBeGreaterThan(3);
+  });
+
+  it("finds TTC Subway and GO Rail trip planner options with upcoming train times", () => {
+    // Union Station -> Bloor-Yonge (Line 1 Subway)
+    const ttcPlan = findRailPlanCandidates({
+      fromLat: 43.6456,
+      fromLon: -79.3806,
+      toLat: 43.6709,
+      toLon: -79.3857,
+      departAtMs: middayMs,
+    });
+    const line1 = ttcPlan.find((c) => c.corridor.agencyId === "ttc" && c.corridor.shortName === "1");
+    expect(line1).toBeDefined();
+    expect(line1!.headsign).toBe("Finch");
+    expect(line1!.upcomingDepartures.length).toBeGreaterThan(0);
+
+    // Guelph Central GO -> Union Station GO (Kitchener Line)
+    const goPlan = findRailPlanCandidates({
+      fromLat: 43.5446,
+      fromLon: -80.2465,
+      toLat: 43.6452,
+      toLon: -79.3806,
+      departAtMs: middayMs,
+    });
+    const kitchener = goPlan.find((c) => c.corridor.agencyId === "go" && c.corridor.shortName === "KI");
+    expect(kitchener).toBeDefined();
+    expect(kitchener!.headsign).toBe("Union Station");
+    expect(kitchener!.upcomingDepartures.length).toBeGreaterThan(0);
   });
 });

@@ -21,10 +21,30 @@ function mergeEnrichedVehicle(prev: LiveVehicle | undefined, incoming: LiveVehic
     routeShortName: incoming.routeShortName ?? (sameRoute ? prev.routeShortName : undefined),
     routeLongName: incoming.routeLongName ?? (sameRoute ? prev.routeLongName : undefined),
     routeColor: incoming.routeColor ?? (sameRoute ? prev.routeColor : undefined),
+    routeType: incoming.routeType ?? (sameRoute ? prev.routeType : undefined),
+    vehicleMode: incoming.vehicleMode ?? (sameRoute ? prev.vehicleMode : undefined),
+    positionSource: incoming.positionSource ?? "live",
     headsign: incoming.headsign ?? (sameTrip ? prev.headsign : undefined),
     patternTripId: incoming.patternTripId ?? (sameTrip ? prev.patternTripId : undefined),
     stopName: incoming.stopName ?? (sameStop ? prev.stopName : undefined),
   };
+}
+
+/** Keep scheduled rail trains alongside live WebSocket vehicles unless live GPS is reporting on that rail route. */
+function preserveScheduledRail(prevMap: Map<string, LiveVehicle>, nextMap: Map<string, LiveVehicle>) {
+  const liveRoutes = new Set<string>();
+  for (const v of nextMap.values()) {
+    if (v.positionSource !== "scheduled" && v.freshness !== "stale") {
+      if (v.routeId) liveRoutes.add(v.routeId);
+      if (v.routeShortName) liveRoutes.add(v.routeShortName);
+    }
+  }
+  for (const [id, v] of prevMap) {
+    if (v.positionSource !== "scheduled") continue;
+    if (v.routeId && liveRoutes.has(v.routeId)) continue;
+    if (v.routeShortName && liveRoutes.has(v.routeShortName)) continue;
+    if (!nextMap.has(id)) nextMap.set(id, v);
+  }
 }
 
 export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState {
@@ -149,16 +169,15 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
             const list = (msg.vehicles as LiveVehicle[]) ?? [];
             const prevMap = mapRef.current;
             const m = new Map<string, LiveVehicle>();
-            const mergedList: LiveVehicle[] = [];
             for (const v of list) {
               const merged = mergeEnrichedVehicle(prevMap.get(v.sourceVehicleId), v);
               m.set(v.sourceVehicleId, merged);
-              mergedList.push(merged);
             }
+            preserveScheduledRail(prevMap, m);
             mapRef.current = m;
             cursorRef.current = Number(msg.cursor || 0);
             setState({
-              vehicles: mergedList,
+              vehicles: Array.from(m.values()),
               feedStatus: String(msg.feedStatus || "unknown"),
               lastSuccessAt: (msg.lastSuccessAt as string | null) ?? null,
               connection: "live_ws",
@@ -214,9 +233,10 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
       connectWs();
     }
 
-    // Periodic polling fallback (30s) — skips work while tab is hidden to save battery, bandwidth, and Worker requests
+    // Periodic polling fallback (30s) — also advances scheduled rail trains smoothly for TTC/GO
     pollTimer = setInterval(() => {
       if (document.hidden) return;
+      const hasScheduledRail = Array.from(mapRef.current.values()).some((v) => v.positionSource === "scheduled");
       if (agencyId === "all" || !ws || ws.readyState !== WebSocket.OPEN) {
         void fetchSnapshot("polling");
       } else {
@@ -224,6 +244,9 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
           ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
         } catch {
           // ignore
+        }
+        if (hasScheduledRail) {
+          void fetchSnapshot("live_ws" as "polling");
         }
       }
     }, 30_000);

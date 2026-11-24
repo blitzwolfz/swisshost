@@ -24,6 +24,20 @@ export interface AgencySummary {
   feeds: Array<Record<string, unknown>>;
 }
 
+export type VehicleMode = "bus" | "streetcar" | "subway" | "rail" | "ferry" | "unknown";
+
+export interface RailCorridorOverlay {
+  agencyId: string;
+  routeId: string;
+  shortName: string;
+  longName: string;
+  mode: "subway" | "rail" | "streetcar";
+  color: string;
+  textColor: string;
+  coordinates: Array<[number, number]>;
+  stations: Array<{ stopId: string; name: string; lat: number; lon: number }>;
+}
+
 export interface LiveVehicle {
   agencyId: string;
   sourceVehicleId: string;
@@ -34,6 +48,9 @@ export interface LiveVehicle {
   routeShortName?: string | null;
   routeLongName?: string | null;
   routeColor?: string | null;
+  routeType?: number | null;
+  vehicleMode?: VehicleMode;
+  positionSource?: "live" | "scheduled";
   tripId: string | null;
   patternTripId?: string | null;
   headsign?: string | null;
@@ -152,6 +169,19 @@ export interface StopArrivals {
 /** True when a departure time is backed by live data rather than the timetable alone. */
 export function isLiveDeparture(d: Pick<StopDeparture, "predictionSource">): boolean {
   return d.predictionSource !== "scheduled" && d.predictionSource !== "unknown";
+}
+
+export function vehicleModeNoun(mode: VehicleMode | undefined | null, fallback = "Bus"): string {
+  if (mode === "subway") return "Subway";
+  if (mode === "rail") return "Train";
+  if (mode === "streetcar") return "Streetcar";
+  if (mode === "ferry") return "Ferry";
+  if (mode === "bus") return "Bus";
+  return fallback;
+}
+
+export function isTrainMode(mode: VehicleMode | undefined | null): boolean {
+  return mode === "subway" || mode === "rail";
 }
 
 /** "11:42 pm" in the viewer's locale clock. */

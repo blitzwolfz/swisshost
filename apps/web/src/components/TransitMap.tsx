@@ -1,8 +1,18 @@
 import React, { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
-import { formatClock, formatCompass, formatSpeed, formatVehicleStatusLine, type LiveVehicle } from "../lib/api";
+import {
+  formatClock,
+  formatCompass,
+  formatSpeed,
+  formatVehicleStatusLine,
+  isTrainMode,
+  vehicleModeNoun,
+  type LiveVehicle,
+  type RailCorridorOverlay,
+  type VehicleMode,
+} from "../lib/api";
 import { usePreferences } from "../lib/preferences";
-import { routeColor } from "../lib/routeColors";
+import { routeColor, routeTextColor } from "../lib/routeColors";
 
 export type MapLabelMode = "line" | "line+fleet" | "icons";
 
@@ -15,13 +25,15 @@ interface TransitMapProps {
   routeShape?: { type: "LineString"; coordinates: Array<[number, number]> } | null;
   /** Colour for the route shape line; defaults to the accent. */
   routeShapeColor?: string | null;
+  /** Rail corridor tracks (TTC Subway / GO Rail) drawn beneath vehicles. */
+  railCorridors?: RailCorridorOverlay[];
   replayTrail?: Array<[number, number]> | null;
   stops?: Array<{ stop_id: string; name: string; lat: number; lon: number }>;
   userLocation?: { lat: number; lon: number } | null;
   selectedStopId?: string | null;
-  onSelectStop?: (stop: { stop_id: string; name: string }) => void;
+  onSelectStop?: (stop: { stop_id: string; name: string; agencyId?: string }) => void;
   followSelected?: boolean;
-  /** How vehicles are labelled on the map: line number (default), line + fleet #, or bus icons only. */
+  /** How vehicles are labelled on the map: line number (default), line + fleet #, or vehicle icons only. */
   labelMode?: MapLabelMode;
   /** Pixels hidden by an overlay at the bottom (e.g. a sheet); centring accounts for it. */
   bottomInset?: number;
@@ -126,55 +138,153 @@ function restyleBasemap(map: maplibregl.Map, t: MapTheme) {
   }
 }
 
-/** Draw the white front-view bus silhouette centered at (cx, cy) with scale s. */
-function drawBusGlyph(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number, cutoutColor: string) {
+type GlyphKind = "bus" | "train" | "streetcar";
+
+function glyphKindFor(mode: VehicleMode | undefined | null): GlyphKind {
+  if (mode === "subway" || mode === "rail") return "train";
+  if (mode === "streetcar") return "streetcar";
+  return "bus";
+}
+
+/** Draw the front-view transit vehicle silhouette (bus, train, or streetcar) centered at (cx, cy). */
+function drawVehicleGlyph(
+  ctx: CanvasRenderingContext2D,
+  kind: GlyphKind,
+  cx: number,
+  cy: number,
+  s: number,
+  fgColor: string,
+  cutoutColor: string
+) {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(s, s);
 
-  // Bus body
-  ctx.fillStyle = "#FFFFFF";
-  ctx.beginPath();
-  ctx.roundRect(-6, -6.5, 12, 11, 2);
-  ctx.fill();
+  if (kind === "train") {
+    // Sleek subway / commuter rail train front
+    ctx.fillStyle = fgColor;
+    ctx.beginPath();
+    ctx.roundRect(-5.6, -7.2, 11.2, 11.4, [3.2, 3.2, 1.5, 1.5]);
+    ctx.fill();
 
-  // Windshield
-  ctx.fillStyle = cutoutColor;
-  ctx.beginPath();
-  ctx.roundRect(-4.4, -4.6, 8.8, 4.4, 0.9);
-  ctx.fill();
+    // Split cab windshield
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.roundRect(-4.2, -5.0, 3.6, 4.1, 0.8);
+    ctx.roundRect(0.6, -5.0, 3.6, 4.1, 0.8);
+    ctx.fill();
 
-  // Destination strip
-  ctx.fillStyle = cutoutColor;
-  ctx.fillRect(-3, -5.8, 6, 0.75);
+    // Twin headlights
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.arc(-3.1, 1.7, 1.15, 0, Math.PI * 2);
+    ctx.arc(3.1, 1.7, 1.15, 0, Math.PI * 2);
+    ctx.fill();
 
-  // Headlights
-  ctx.fillStyle = cutoutColor;
-  ctx.beginPath();
-  ctx.arc(-3.4, 2.1, 1.05, 0, Math.PI * 2);
-  ctx.arc(3.4, 2.1, 1.05, 0, Math.PI * 2);
-  ctx.fill();
+    // Rail tracks underneath
+    ctx.strokeStyle = fgColor;
+    ctx.lineWidth = 1.45;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(-3.4, 4.7);
+    ctx.lineTo(-5.2, 7.2);
+    ctx.moveTo(3.4, 4.7);
+    ctx.lineTo(5.2, 7.2);
+    ctx.moveTo(-4.4, 6.2);
+    ctx.lineTo(4.4, 6.2);
+    ctx.stroke();
+  } else if (kind === "streetcar") {
+    // Overhead pantograph
+    ctx.strokeStyle = fgColor;
+    ctx.lineWidth = 1.15;
+    ctx.beginPath();
+    ctx.moveTo(-3.6, -7.4);
+    ctx.lineTo(3.6, -7.4);
+    ctx.moveTo(0, -7.4);
+    ctx.lineTo(0, -5.4);
+    ctx.stroke();
 
-  // Wheels
-  ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(-5, 4.2, 2.5, 2);
-  ctx.fillRect(2.5, 4.2, 2.5, 2);
+    // Streetcar body
+    ctx.fillStyle = fgColor;
+    ctx.beginPath();
+    ctx.roundRect(-5.6, -5.4, 11.2, 10.2, 2);
+    ctx.fill();
+
+    // Wide front window
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.roundRect(-4.2, -3.9, 8.4, 4.2, 0.8);
+    ctx.fill();
+
+    // Twin headlights
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.arc(-3.1, 2.3, 1.0, 0, Math.PI * 2);
+    ctx.arc(3.1, 2.3, 1.0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tram tracks
+    ctx.strokeStyle = fgColor;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.moveTo(-3.4, 5.2);
+    ctx.lineTo(-4.6, 7.0);
+    ctx.moveTo(3.4, 5.2);
+    ctx.lineTo(4.6, 7.0);
+    ctx.stroke();
+  } else {
+    // Bus body
+    ctx.fillStyle = fgColor;
+    ctx.beginPath();
+    ctx.roundRect(-6, -6.5, 12, 11, 2);
+    ctx.fill();
+
+    // Windshield
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.roundRect(-4.4, -4.6, 8.8, 4.4, 0.9);
+    ctx.fill();
+
+    // Destination strip
+    ctx.fillStyle = cutoutColor;
+    ctx.fillRect(-3, -5.8, 6, 0.75);
+
+    // Headlights
+    ctx.fillStyle = cutoutColor;
+    ctx.beginPath();
+    ctx.arc(-3.4, 2.1, 1.05, 0, Math.PI * 2);
+    ctx.arc(3.4, 2.1, 1.05, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Wheels
+    ctx.fillStyle = fgColor;
+    ctx.fillRect(-5, 4.2, 2.5, 2);
+    ctx.fillRect(2.5, 4.2, 2.5, 2);
+  }
 
   ctx.restore();
 }
 
 /**
- * Crisp HiDPI bus marker:
- * - When `lineLabel` is non-empty (default for in-service buses): route-coloured pill
- *   containing the bus icon + bold line number (e.g. [bus 1], [bus 2], [bus 99], [bus 504]).
- * - When `lineLabel` is empty (unassigned buses or icon-only mode): compact circular bus puck.
+ * Crisp HiDPI vehicle marker:
+ * - Active routes: route-coloured pill containing the vehicle icon (train/streetcar/bus) + line number.
+ * - Unassigned or icons-only mode: compact circular vehicle puck.
+ * - Timetable-estimated trains get a subtle dashed border so riders distinguish them from live GPS.
  */
-function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: MapTheme): ImageData {
+function drawVehicleMarker(
+  kind: GlyphKind,
+  color: string,
+  lineLabel: string,
+  selected: boolean,
+  scheduled: boolean,
+  t: MapTheme
+): ImageData {
   const scale = 2;
   const ring = selected ? 3 : 1.75;
+  const fg = routeTextColor(color);
 
   if (!lineLabel) {
-    const r = selected ? 14 : 11;
+    const r = selected ? 14 : kind === "train" ? 12 : 11;
     const size = Math.ceil((r + ring + 1) * 2);
     const cx = size / 2;
     const cy = size / 2;
@@ -201,7 +311,18 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
     ctx.fillStyle = color;
     ctx.fill();
 
-    drawBusGlyph(ctx, cx, cy, selected ? 1.05 : 0.85, color);
+    if (scheduled) {
+      ctx.save();
+      ctx.setLineDash([2.5, 2]);
+      ctx.strokeStyle = fg;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r - 1.2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    drawVehicleGlyph(ctx, kind, cx, cy, selected ? 1.05 : 0.85, fg, color);
     return ctx.getImageData(0, 0, size * scale, size * scale);
   }
 
@@ -210,7 +331,7 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
   ctx0.font = font;
   const textW = ctx0.measureText(lineLabel).width;
 
-  const innerH = selected ? 26 : 22;
+  const innerH = selected ? 26 : kind === "train" ? 24 : 22;
   const iconSlotW = selected ? 18 : 15;
   const gap = 3;
   const padL = selected ? 6 : 5;
@@ -218,8 +339,9 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
   const innerW = Math.ceil(padL + iconSlotW + gap + Math.max(12, textW) + padR);
   const w = Math.ceil(innerW + ring * 2);
   const h = Math.ceil(innerH + ring * 2);
-  const outerRadius = h / 2;
-  const innerRadius = innerH / 2;
+  // Trains get slightly sharper rounded-rectangle silhouette; buses get smooth pills
+  const outerRadius = kind === "train" ? 6 : h / 2;
+  const innerRadius = kind === "train" ? 4.5 : innerH / 2;
 
   const canvas = document.createElement("canvas");
   canvas.width = w * scale;
@@ -227,7 +349,7 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
 
-  // Outer contrast border separates the bus badge from route lines and streets
+  // Outer contrast border separates marker from route tracks & streets
   ctx.beginPath();
   ctx.roundRect(0, 0, w, h, outerRadius);
   ctx.fillStyle = selected ? t.ink : t.paper;
@@ -235,7 +357,7 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
 
   if (selected) {
     ctx.beginPath();
-    ctx.roundRect(1.5, 1.5, w - 3, h - 3, outerRadius - 1.5);
+    ctx.roundRect(1.5, 1.5, w - 3, h - 3, Math.max(2, outerRadius - 1.5));
     ctx.fillStyle = t.paper;
     ctx.fill();
   }
@@ -246,14 +368,27 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
   ctx.fillStyle = color;
   ctx.fill();
 
-  // Bus icon on the left
+  // Subtle dashed inner frame for timetable-estimated trains (honest provenance cue)
+  if (scheduled) {
+    ctx.save();
+    ctx.setLineDash([3, 2]);
+    ctx.strokeStyle = fg;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(ring + 1.2, ring + 1.2, innerW - 2.4, innerH - 2.4, Math.max(2, innerRadius - 1));
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Vehicle icon on the left
   const iconCx = ring + padL + iconSlotW / 2;
   const iconCy = h / 2;
-  drawBusGlyph(ctx, iconCx, iconCy, selected ? 0.92 : 0.8, color);
+  drawVehicleGlyph(ctx, kind, iconCx, iconCy, selected ? 0.92 : 0.82, fg, color);
 
-  // Bold line number on the right (1, 2, 99, 504, LW, etc.)
+  // Bold line number on the right (1, 2, 4, LW, KI, 99, 504, etc.)
   const textX = ring + padL + iconSlotW + gap + Math.max(12, textW) / 2;
-  ctx.fillStyle = "#FFFFFF";
+  ctx.fillStyle = fg;
   ctx.font = font;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -262,7 +397,7 @@ function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: M
   return ctx.getImageData(0, 0, w * scale, h * scale);
 }
 
-/** Directional heading pointer orbiting the bus marker to show direction of travel. */
+/** Directional heading pointer orbiting the vehicle marker to show direction of travel. */
 function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
   const scale = 2;
   const w = selected ? 16 : 13;
@@ -318,6 +453,7 @@ export function TransitMap({
   onSelectVehicle,
   routeShape,
   routeShapeColor,
+  railCorridors = [],
   replayTrail,
   stops,
   userLocation = null,
@@ -359,8 +495,10 @@ export function TransitMap({
       const selected = v.vehicleId === selId;
       const assigned = Boolean(v.routeId || v.tripId);
       const hasBearing = v.bearingDeg !== null && Number.isFinite(v.bearingDeg);
-      const color = routeColor(v.agencyId, v.routeId, v.routeColor);
+      const color = routeColor(v.agencyId, v.routeShortName ?? v.routeId, v.routeColor);
       const stale = v.freshness === "stale";
+      const scheduled = v.positionSource === "scheduled";
+      const kind = glyphKindFor(v.vehicleMode);
       const pos = positions?.get(keyOf(v)) ?? [v.lon, v.lat];
       const lineNum = labelModeRef.current === "icons" ? "" : lineNumberOf(v);
       const fleetSubLabel =
@@ -373,13 +511,14 @@ export function TransitMap({
         properties: {
           agencyId: v.agencyId,
           vehicleId: v.vehicleId,
-          icon: `bus|${color}|${selected ? 1 : 0}|${lineNum}`,
+          icon: `veh|${kind}|${color}|${selected ? 1 : 0}|${scheduled ? 1 : 0}|${lineNum}`,
           headingIcon: `hdg|${color}|${selected ? 1 : 0}`,
           fleetSubLabel,
           selectedSubLabel,
           bearing: hasBearing ? v.bearingDeg : 0,
           hasBearing,
           assigned,
+          isTrain: isTrainMode(v.vehicleMode),
           stale,
           lastSeen: stale ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}` : "",
           selected,
@@ -414,13 +553,17 @@ export function TransitMap({
       "bottom-right"
     );
 
-    // Bus+line badges and heading arrows are generated on demand per colour + line + state
+    // Vehicle badges (bus/train/streetcar + line number) and heading arrows generated on demand
     map.on("styleimagemissing", (e) => {
       const id = e.id;
       if (map.hasImage(id)) return;
-      if (id.startsWith("bus|")) {
-        const [, color, sel, ...rest] = id.split("|");
-        map.addImage(id, drawBusMarker(color!, rest.join("|"), sel === "1", t), { pixelRatio: 2 });
+      if (id.startsWith("veh|")) {
+        const [, kind, color, sel, sched, ...rest] = id.split("|");
+        map.addImage(
+          id,
+          drawVehicleMarker(kind as GlyphKind, color!, rest.join("|"), sel === "1", sched === "1", t),
+          { pixelRatio: 2 }
+        );
       } else if (id.startsWith("hdg|")) {
         const [, color, sel] = id.split("|");
         map.addImage(id, drawHeading(color!, sel === "1", t), { pixelRatio: 2 });
@@ -429,6 +572,45 @@ export function TransitMap({
 
     const setupLayers = () => {
       restyleBasemap(map, t);
+
+      // Permanent rail corridors layer (TTC Subway Lines 1/2/4 & GO Rail Lines)
+      map.addSource("rail-corridors", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: "rail-corridors-casing",
+        type: "line",
+        source: "rail-corridors",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": t.paper,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 4.5, 13, 7.5],
+          "line-opacity": 0.9,
+        },
+      });
+      map.addLayer({
+        id: "rail-corridors-line",
+        type: "line",
+        source: "rail-corridors",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": ["get", "color"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2.5, 13, 4.5],
+          "line-opacity": 0.85,
+        },
+      });
+
+      map.addSource("rail-stations", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: "rail-stations-dots",
+        type: "circle",
+        source: "rail-stations",
+        minzoom: 10.5,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10.5, 3, 14, 5.5],
+          "circle-color": t.paper,
+          "circle-stroke-color": ["get", "color"],
+          "circle-stroke-width": 2.2,
+        },
+      });
 
       map.addSource("route-shape", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       map.addLayer({
@@ -498,8 +680,8 @@ export function TransitMap({
         type: "geojson",
         data: toGeoJson(vehiclesRef.current, selectedRef.current, shownPos.current),
         cluster: true,
-        clusterMaxZoom: 10,
-        clusterRadius: 42,
+        clusterMaxZoom: 9.5,
+        clusterRadius: 40,
       });
 
       map.addLayer({
@@ -537,7 +719,7 @@ export function TransitMap({
         0.72,
       ];
 
-      // Directional heading arrow pointing in the bus's direction of travel
+      // Directional heading arrow pointing in the vehicle's direction of travel
       map.addLayer({
         id: "vehicle-heading",
         type: "symbol",
@@ -554,7 +736,7 @@ export function TransitMap({
         paint: { "icon-opacity": vehicleOpacity },
       });
 
-      // Bus icon + line number pill
+      // Vehicle icon + line number pill (trains sit above buses so subway/GO lines stay legible)
       map.addLayer({
         id: "vehicle-points",
         type: "symbol",
@@ -568,6 +750,8 @@ export function TransitMap({
             "case",
             ["boolean", ["get", "selected"], false],
             100,
+            ["boolean", ["get", "isTrain"], false],
+            10,
             ["boolean", ["get", "stale"], false],
             0,
             ["boolean", ["get", "assigned"], true],
@@ -593,7 +777,7 @@ export function TransitMap({
           "text-anchor": "top",
           "text-optional": true,
           "text-padding": 3,
-          "symbol-sort-key": ["case", ["boolean", ["get", "assigned"], true], 2, 1],
+          "symbol-sort-key": ["case", ["boolean", ["get", "isTrain"], false], 10, ["boolean", ["get", "assigned"], true], 2, 1],
         },
         paint: {
           "text-color": t.textStrong,
@@ -603,7 +787,7 @@ export function TransitMap({
         },
       });
 
-      // Always-visible fleet # sub-label under the selected bus
+      // Always-visible fleet # sub-label under the selected vehicle
       map.addLayer({
         id: "vehicle-selected-label",
         type: "symbol",
@@ -660,7 +844,7 @@ export function TransitMap({
         if (found && onSelectRef.current) onSelectRef.current(found);
       });
 
-      // Lightweight desktop hover tooltip showing Line #, destination, and Bus #
+      // Lightweight desktop hover tooltip showing Line #, mode, destination, and vehicle #
       const hoverPopup = new maplibregl.Popup({
         closeButton: false,
         closeOnClick: false,
@@ -677,20 +861,29 @@ export function TransitMap({
         const found = vehiclesRef.current.find((v) => v.vehicleId === vid && (!ag || v.agencyId === ag));
         if (!found) return;
         const line = lineNumberOf(found);
-        const title = line ? `Line ${escapeHtml(line)} · Bus #${escapeHtml(found.fleetNumber)}` : `Bus #${escapeHtml(found.fleetNumber)}`;
+        const modeLabel = vehicleModeNoun(found.vehicleMode, "Bus");
+        const title = line
+          ? `Line ${escapeHtml(line)} ${escapeHtml(modeLabel)} · #${escapeHtml(found.fleetNumber)}`
+          : `${escapeHtml(modeLabel)} #${escapeHtml(found.fleetNumber)}`;
         const subtitle = found.headsign
-          ? escapeHtml(found.headsign)
+          ? `Towards ${escapeHtml(found.headsign)}`
           : found.routeLongName
             ? escapeHtml(found.routeLongName)
             : line
-              ? `Route ${escapeHtml(line)}`
+              ? `Line ${escapeHtml(line)}`
               : "Not on a line";
         const speedText = found.speedMps !== null ? formatSpeed(found.speedMps, unitsRef.current) : null;
         const compass = found.bearingDeg !== null ? formatCompass(found.bearingDeg) : "";
+        const sourceTag =
+          found.positionSource === "scheduled"
+            ? "Timetable estimate"
+            : found.freshness === "stale"
+              ? `Last seen ${formatClock(found.observedAt ?? found.receivedAt)}`
+              : `Live GPS · ${found.ageSeconds}s ago`;
         const metaParts = [
           found.stopName ? formatVehicleStatusLine(found) : null,
           speedText ? `${speedText}${compass ? ` ${compass}` : ""}` : null,
-          found.freshness === "stale" ? `Last seen ${formatClock(found.observedAt ?? found.receivedAt)}` : `${found.ageSeconds}s ago`,
+          sourceTag,
         ].filter(Boolean);
         hoverPopup
           .setLngLat(feat.geometry.coordinates as [number, number])
@@ -708,25 +901,34 @@ export function TransitMap({
         hoverPopup.remove();
       });
 
-      map.on("click", "stops-dots", (e) => {
+      const handleStopClick = (e: maplibregl.MapLayerMouseEvent) => {
         if (!onSelectStopRef.current) return;
-        // Vehicles sit above stops; a click on a vehicle wins
         const hitVehicle = map.queryRenderedFeatures(e.point, { layers: ["vehicle-points"] }).length > 0;
         if (hitVehicle) return;
         const p = e.features?.[0]?.properties;
-        if (p?.stopId) onSelectStopRef.current({ stop_id: String(p.stopId), name: String(p.name ?? "") });
-      });
+        if (p?.stopId) {
+          onSelectStopRef.current({
+            stop_id: String(p.stopId),
+            name: String(p.name ?? ""),
+            agencyId: p.agencyId ? String(p.agencyId) : undefined,
+          });
+        }
+      };
 
-      for (const layer of ["vehicle-points", "vehicle-clusters", "stops-dots"]) {
+      map.on("click", "stops-dots", handleStopClick);
+      map.on("click", "rail-stations-dots", handleStopClick);
+
+      for (const layer of ["vehicle-points", "vehicle-clusters", "stops-dots", "rail-stations-dots"]) {
         map.on("mouseenter", layer, () => {
-          if (layer !== "stops-dots" || onSelectStopRef.current) map.getCanvas().style.cursor = "pointer";
+          if ((layer !== "stops-dots" && layer !== "rail-stations-dots") || onSelectStopRef.current) {
+            map.getCanvas().style.cursor = "pointer";
+          }
         });
         map.on("mouseleave", layer, () => {
           map.getCanvas().style.cursor = "";
         });
       }
 
-      // Let effects that ran before the style loaded push their data now
       map.fire("sh:ready");
     };
 
@@ -825,6 +1027,54 @@ export function TransitMap({
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vehicles, selectedVehicleId, followSelected, interpolate, labelMode, resolvedTheme]
+  );
+
+  // Rail corridor lines & stations (TTC Subway + GO Rail)
+  useEffect(
+    () =>
+      whenReady("rail-corridors", () => {
+        const map = mapRef.current!;
+        (map.getSource("rail-corridors") as maplibregl.GeoJSONSource).setData({
+          type: "FeatureCollection",
+          features: railCorridors.map((c) => ({
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: c.coordinates },
+            properties: {
+              agencyId: c.agencyId,
+              routeId: c.routeId,
+              shortName: c.shortName,
+              color: c.color,
+            },
+          })),
+        });
+
+        const seenStation = new Set<string>();
+        const stationFeatures = railCorridors.flatMap((c) =>
+          c.stations
+            .filter((s) => {
+              const k = `${c.agencyId}:${s.stopId}`;
+              if (seenStation.has(k)) return false;
+              seenStation.add(k);
+              return true;
+            })
+            .map((s) => ({
+              type: "Feature" as const,
+              geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+              properties: {
+                agencyId: c.agencyId,
+                stopId: s.stopId,
+                name: s.name,
+                color: c.color,
+              },
+            }))
+        );
+        (map.getSource("rail-stations") as maplibregl.GeoJSONSource).setData({
+          type: "FeatureCollection",
+          features: stationFeatures,
+        });
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [railCorridors, resolvedTheme]
   );
 
   useEffect(

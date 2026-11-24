@@ -24,8 +24,11 @@ import {
   formatRelativeAge,
   formatSpeed,
   formatVehicleStatusLine,
+  isTrainMode,
+  vehicleModeNoun,
   type AgencySummary,
   type LiveVehicle,
+  type RailCorridorOverlay,
   type StopArrivals,
 } from "../lib/api";
 import { agencyName, agencyShortName } from "../lib/agencies";
@@ -73,8 +76,22 @@ export default function LiveMapPage() {
   const [fleetFilter, setFleetFilter] = useState("");
   const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh" | "stale">("all");
   const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
+  const [modeFilter, setModeFilter] = useState<"all" | "trains" | "subway" | "streetcar" | "bus">("all");
   const [labelMode, setLabelMode] = useState<MapLabelMode>("line");
   const [showFilters, setShowFilters] = useState(false);
+
+  // Reset mode filter when switching agencies
+  useEffect(() => {
+    setModeFilter("all");
+  }, [agencyId]);
+
+  const { data: railData } = useQuery({
+    queryKey: ["rail-corridors", agencyId],
+    queryFn: () =>
+      apiJson<{ corridors: RailCorridorOverlay[] }>(`/api/v1/rail-corridors?agency=${encodeURIComponent(agencyId)}`),
+    enabled: agencyId === "ttc" || agencyId === "go" || agencyId === "all",
+    staleTime: 300_000,
+  });
   const [followSelected, setFollowSelected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [onBoardMode, setOnBoardMode] = useState(false);
@@ -151,12 +168,17 @@ export default function LiveMapPage() {
       if (freshnessFilter === "stale" && v.freshness !== "stale") return false;
       if (assignedFilter === "assigned" && !v.routeId && !v.tripId) return false;
       if (assignedFilter === "unassigned" && (v.routeId || v.tripId)) return false;
+      if (modeFilter === "trains" && !isTrainMode(v.vehicleMode)) return false;
+      if (modeFilter === "subway" && v.vehicleMode !== "subway") return false;
+      if (modeFilter === "streetcar" && v.vehicleMode !== "streetcar") return false;
+      if (modeFilter === "bus" && v.vehicleMode && v.vehicleMode !== "bus") return false;
       return true;
     });
-    // Put live in-service buses first, then unassigned live buses, then stale vehicles
+    // Put trains first, then live in-service buses/streetcars, then unassigned, then stale
     return [...list].sort((a, b) => {
       const rank = (v: LiveVehicle) =>
-        (v.freshness === "stale" ? 2 : 0) + (v.routeId || v.tripId ? 0 : 1);
+        (v.freshness === "stale" ? 4 : 0) +
+        (isTrainMode(v.vehicleMode) ? 0 : v.routeId || v.tripId ? 1 : 2);
       const rDiff = rank(a) - rank(b);
       if (rDiff !== 0) return rDiff;
       const routeCmp = (a.routeShortName ?? a.routeId ?? "zzz").localeCompare(
@@ -167,12 +189,26 @@ export default function LiveMapPage() {
       if (routeCmp !== 0) return routeCmp;
       return a.fleetNumber.localeCompare(b.fleetNumber, undefined, { numeric: true });
     });
-  }, [live.vehicles, routes, fleetFilter, freshnessFilter, assignedFilter]);
+  }, [live.vehicles, routes, fleetFilter, freshnessFilter, assignedFilter, modeFilter]);
 
   const activeFilterCount =
-    (fleetFilter ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0) + (assignedFilter !== "all" ? 1 : 0);
+    (fleetFilter ? 1 : 0) +
+    (freshnessFilter !== "all" ? 1 : 0) +
+    (assignedFilter !== "all" ? 1 : 0) +
+    (modeFilter !== "all" ? 1 : 0);
 
-  const liveCount = filteredVehicles.filter((v) => v.freshness !== "stale").length;
+  const visibleRailCorridors = useMemo(() => {
+    if (modeFilter === "bus" || modeFilter === "streetcar") return [];
+    const all = railData?.corridors ?? [];
+    if (routeFilter) {
+      return all.filter((c) => c.routeId === routeFilter || c.shortName === routeFilter);
+    }
+    return all;
+  }, [railData, modeFilter, routeFilter]);
+
+  const liveGpsCount = filteredVehicles.filter((v) => v.freshness !== "stale" && v.positionSource !== "scheduled").length;
+  const scheduledTrainCount = filteredVehicles.filter((v) => v.positionSource === "scheduled").length;
+  const liveCount = liveGpsCount + scheduledTrainCount;
 
   const selectedVehicle: LiveVehicle | null = useMemo(() => {
     if (!selectedId) return null;
@@ -270,10 +306,10 @@ export default function LiveMapPage() {
   const setParam = (key: string, value: string | null) => setParams({ [key]: value });
 
   const selectVehicle = (id: string | null) => setParams({ vehicle: id, ...(id ? { stop: null, stopAgency: null } : {}) });
-  const selectStop = (stop: { stop_id: string } | null) =>
+  const selectStop = (stop: { stop_id: string; agencyId?: string } | null) =>
     setParams({
       stop: stop?.stop_id ?? null,
-      stopAgency: stop ? (activeVehicle?.agencyId ?? (agencyId !== "all" ? agencyId : null)) : null,
+      stopAgency: stop ? (stop.agencyId ?? activeVehicle?.agencyId ?? (agencyId !== "all" ? agencyId : null)) : null,
       vehicle: null,
     });
 
@@ -293,14 +329,20 @@ export default function LiveMapPage() {
 
   const feedNote =
     live.feedStatus === "missing_key"
-      ? "waiting for an API key"
+      ? scheduledTrainCount > 0
+        ? `${scheduledTrainCount} trains by timetable (API key pending)`
+        : "waiting for an API key"
       : live.lastSuccessAt
-        ? `updated ${formatRelativeAge(live.lastSuccessAt)}`
+        ? scheduledTrainCount > 0
+          ? `${liveGpsCount} GPS · ${scheduledTrainCount} timetable`
+          : `updated ${formatRelativeAge(live.lastSuccessAt)}`
         : live.connection === "connecting" && settledAgency !== agencyId
           ? "connecting"
-          : live.feedStatus === "fresh"
-            ? "live feed"
-            : "no recent update";
+          : scheduledTrainCount > 0
+            ? `${scheduledTrainCount} trains by timetable`
+            : live.feedStatus === "fresh"
+              ? "live feed"
+              : "no recent update";
 
   // Busiest other agency, offered when the current one has nothing on the road
   const busiestOther = useMemo(
@@ -326,6 +368,40 @@ export default function LiveMapPage() {
   );
 
   /* ---------- Panel pieces (shared by the desktop side panel and the phone sheet) ---------- */
+
+  const modeOptions: Array<{ id: typeof modeFilter; label: string }> =
+    agencyId === "ttc"
+      ? [
+          { id: "all", label: "All" },
+          { id: "subway", label: "Subway" },
+          { id: "streetcar", label: "Streetcar" },
+          { id: "bus", label: "Bus" },
+        ]
+      : agencyId === "go" || agencyId === "all"
+        ? [
+            { id: "all", label: "All" },
+            { id: "trains", label: "Trains" },
+            { id: "bus", label: "Buses" },
+          ]
+        : [];
+
+  const modeSwitcher =
+    modeOptions.length > 0 ? (
+      <div role="group" aria-label="Filter by vehicle type" className="sh-seg w-full">
+        {modeOptions.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            aria-pressed={modeFilter === m.id}
+            onClick={() => setModeFilter(m.id)}
+            style={{ minHeight: 38, padding: "0 0.5rem" }}
+            className="text-xs"
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+    ) : null;
 
   const routeSelect =
     agencyId !== "all" ? (
@@ -406,7 +482,8 @@ export default function LiveMapPage() {
 
       {activeAgency?.liveStatus === "missing_key" && (
         <p className="m-0 text-sm">
-          <strong>{activeAgency.name}</strong> needs <code>GO_TRANSIT_API_KEY</code> before live positions appear.{" "}
+          <strong>{activeAgency.name}</strong> trains are currently estimated from the rail timetable while{" "}
+          <code>GO_TRANSIT_API_KEY</code> is pending. Live GPS trains &amp; buses activate automatically once set.{" "}
           <Link to="/status">Feed status</Link>
         </p>
       )}
@@ -481,6 +558,7 @@ export default function LiveMapPage() {
           setFleetFilter("");
           setFreshnessFilter("all");
           setAssignedFilter("all");
+          setModeFilter("all");
           setParam("route", null);
         }}
       >
@@ -516,17 +594,21 @@ export default function LiveMapPage() {
       <ul className="sh-deps" style={{ borderTop: "var(--border-w) solid var(--line)" }}>
         {filteredVehicles.slice(0, 200).map((v) => {
           const stale = v.freshness === "stale";
+          const scheduled = v.positionSource === "scheduled";
           const d = formatDelay(v.scheduleDeviationSec);
+          const vNoun = vehicleModeNoun(v.vehicleMode, noun);
           const rightText = stale
             ? `Last seen ${formatClock(v.observedAt ?? v.receivedAt)}`
-            : d.tone !== "muted"
-              ? d.text
-              : v.speedMps !== null
-                ? v.speedMps < 0.5
-                  ? "Stopped"
-                  : formatSpeed(v.speedMps, units)
-                : `${v.ageSeconds}s ago`;
-          const rightClass = stale
+            : scheduled
+              ? "Timetable"
+              : d.tone !== "muted"
+                ? d.text
+                : v.speedMps !== null
+                  ? v.speedMps < 0.5
+                    ? "Stopped"
+                    : formatSpeed(v.speedMps, units)
+                  : `${v.ageSeconds}s ago`;
+          const rightClass = stale || scheduled
             ? "sh-sched"
             : d.tone === "err"
               ? "font-bold"
@@ -541,21 +623,21 @@ export default function LiveMapPage() {
                   selectVehicle(v.vehicleId);
                   setFollowSelected(true);
                 }}
-                className={`sh-dep w-full text-left bg-transparent border-x-0 border-t-0 cursor-pointer ${stale ? "sh-dep-sched" : ""}`}
+                className={`sh-dep w-full text-left bg-transparent border-x-0 border-t-0 cursor-pointer ${stale || scheduled ? "sh-dep-sched" : ""}`}
                 style={{ font: "inherit" }}
                 aria-current={v.vehicleId === selectedId ? "true" : undefined}
               >
                 <RouteBadge
                   size="lg"
                   label={v.routeShortName ?? v.routeId ?? ""}
-                  color={routeColor(v.agencyId, v.routeId, v.routeColor)}
+                  color={routeColor(v.agencyId, v.routeShortName ?? v.routeId, v.routeColor)}
                 />
                 <span className="sh-dep-main">
                   <span className="sh-dep-dest">
-                    {v.headsign ? v.headsign : v.routeId ? `Route ${v.routeShortName ?? v.routeId}` : "Not on a route"}
+                    {v.headsign ? v.headsign : v.routeId ? `Line ${v.routeShortName ?? v.routeId}` : "Not on a route"}
                   </span>
                   <span className="sh-dep-sub">
-                    {noun} #{v.fleetNumber}
+                    {vNoun} #{v.fleetNumber}
                     {agencyId === "all" ? `, ${agencyShortName(v.agencyId)}` : ""}
                     {v.stopName ? ` · ${formatVehicleStatusLine(v)}` : ""}
                   </span>
@@ -563,7 +645,7 @@ export default function LiveMapPage() {
                 <span className="sh-dep-leader" aria-hidden="true" />
                 <span
                   className={`text-sm text-right shrink-0 tabular-nums ${rightClass}`}
-                  style={!stale && d.tone === "err" ? { color: "var(--danger)" } : undefined}
+                  style={!stale && !scheduled && d.tone === "err" ? { color: "var(--danger)" } : undefined}
                 >
                   {rightText}
                 </span>
@@ -648,20 +730,22 @@ export default function LiveMapPage() {
         <RouteBadge
           size="lg"
           label={activeVehicle.routeShortName ?? activeVehicle.routeId ?? ""}
-          color={routeColor(activeVehicle.agencyId, activeVehicle.routeId, activeVehicle.routeColor)}
+          color={routeColor(activeVehicle.agencyId, activeVehicle.routeShortName ?? activeVehicle.routeId, activeVehicle.routeColor)}
         />
         <div className="min-w-0">
           <h2 className="m-0 text-xl font-extrabold leading-tight">
             {activeVehicle.headsign
               ? activeVehicle.headsign
-              : activeVehicle.routeLongName || `${noun} ${activeVehicle.fleetNumber}`}
+              : activeVehicle.routeLongName || `${vehicleModeNoun(activeVehicle.vehicleMode, noun)} ${activeVehicle.fleetNumber}`}
           </h2>
           <p className="m-0 text-sm sh-muted">
             <span className="sh-fleet" style={{ fontSize: "1rem" }}>
-              {noun} {activeVehicle.fleetNumber}
+              {vehicleModeNoun(activeVehicle.vehicleMode, noun)} {activeVehicle.fleetNumber}
             </span>
             , {agencyShortName(activeVehicle.agencyId)}.{" "}
-            {activeVehicle.freshness === "stale" ? (
+            {activeVehicle.positionSource === "scheduled" ? (
+              <i>Timetable estimate (no public live GPS feed yet)</i>
+            ) : activeVehicle.freshness === "stale" ? (
               <i>Last seen {formatClock(activeVehicle.observedAt ?? activeVehicle.receivedAt)}</i>
             ) : (
               <>
@@ -830,6 +914,7 @@ export default function LiveMapPage() {
       onSelectVehicle={(v) => selectVehicle(v.vehicleId)}
       routeShape={effectiveRouteShape}
       routeShapeColor={shapeColor}
+      railCorridors={visibleRailCorridors}
       stops={effectiveStops}
       selectedStopId={selectedStopId}
       onSelectStop={(s) => selectStop(s)}
@@ -893,6 +978,7 @@ export default function LiveMapPage() {
                       Live {noun === "Bus" ? "buses" : "vehicles"}, {agencyLabel}
                     </h2>
                   </div>
+                  {modeSwitcher}
                   <div className="flex items-stretch gap-2">
                     {routeSelect && <div className="flex-1 min-w-0">{routeSelect}</div>}
                     <button
@@ -1033,6 +1119,7 @@ export default function LiveMapPage() {
           {sheetMode === "filters" && (
             <div className="space-y-3">
               <h2 className="m-0 text-xl font-extrabold">Filters</h2>
+              {modeSwitcher}
               {filtersForm}
             </div>
           )}

@@ -14,10 +14,18 @@ import {
   predictStopArrival,
 } from "@swisshost/analytics";
 import {
+  RAIL_CORRIDORS,
   computeUpcomingBusesForLeg,
+  findRailPlanCandidates,
   formatSecondsToClock,
+  generateScheduledRailVehicles,
   getLocalServiceContext,
+  getRailCorridor,
+  getRailCorridorsForAgency,
+  getScheduledRailRideTimeline,
   haversineMeters,
+  inferVehicleMode,
+  isRailMode,
   type PlanRoutePattern,
   type PlanScheduledDepartureInput,
   type PlannedUpcomingBus,
@@ -324,6 +332,18 @@ app.get("/api/v1/agencies/:id/status", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Rail Corridors Overlay (TTC Subway + GO Rail / UP Express)
+// ---------------------------------------------------------------------------
+app.get("/api/v1/rail-corridors", (c) => {
+  const agency = c.req.query("agency") || "all";
+  c.header("Cache-Control", "public, max-age=300");
+  return c.json({
+    agencyId: agency,
+    corridors: getRailCorridorsForAgency(agency),
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Live Vehicles & WebSocket (F02, F05, F15)
 // ---------------------------------------------------------------------------
 app.get("/api/v1/live", async (c) => {
@@ -435,17 +455,39 @@ app.get("/api/v1/agencies/:id/vehicles", async (c) => {
     });
   }
 
-  // Enrich with active route names/colors, trip headsigns, and resolved stop names from KV/D1
+  // Enrich with active route names/colors/types, trip headsigns, mode, and resolved stop names from KV/D1
   const lookups = await getAgencyStaticLookups(c.env, agencyId);
-  vehicles = vehicles.map((v) => enrichVehicleWithLookups(v, lookups));
+  const modeFilter = c.req.query("mode")?.toLowerCase() || "";
+  vehicles = vehicles.map((v) => enrichVehicleWithLookups(v, lookups, agencyId));
 
-  if (routeId) vehicles = vehicles.filter((v) => v.routeId === routeId);
+  // Merge timetable-estimated trains for TTC Subway and GO Rail corridors that don't have live GPS reporting
+  const liveRailRouteIds = new Set<string>();
+  for (const v of vehicles) {
+    if (v.freshness !== "stale" && isRailMode(v.vehicleMode)) {
+      if (v.routeId) liveRailRouteIds.add(v.routeId);
+      if (v.routeShortName) liveRailRouteIds.add(v.routeShortName);
+    }
+  }
+  const scheduledTrains = generateScheduledRailVehicles(agencyId, Date.now(), liveRailRouteIds);
+  if (scheduledTrains.length > 0) {
+    vehicles = [...vehicles, ...scheduledTrains];
+  }
+
+  if (routeId) {
+    vehicles = vehicles.filter((v) => v.routeId === routeId || v.routeShortName === routeId);
+  }
+  if (modeFilter === "trains" || modeFilter === "rail") {
+    vehicles = vehicles.filter((v) => isRailMode(v.vehicleMode));
+  } else if (modeFilter === "subway" || modeFilter === "streetcar" || modeFilter === "bus") {
+    vehicles = vehicles.filter((v) => v.vehicleMode === modeFilter);
+  }
   if (q) {
     vehicles = vehicles.filter(
       (v) =>
         v.fleetNumber.toLowerCase().includes(q) ||
         v.vehicleId.toLowerCase().includes(q) ||
         (v.routeId?.toLowerCase().includes(q) ?? false) ||
+        (v.routeShortName?.toLowerCase().includes(q) ?? false) ||
         (v.tripId?.toLowerCase().includes(q) ?? false)
     );
   }
@@ -564,6 +606,57 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
   const agencyId = c.req.param("id");
   const vehicleId = decodeURIComponent(c.req.param("vehicle"));
 
+  // Timetable-estimated train detail (TTC Subway / GO Rail when no live GPS is present)
+  if (vehicleId.startsWith("sched:")) {
+    const sched = getScheduledRailRideTimeline(agencyId, vehicleId, Date.now());
+    if (sched) {
+      const lv = sched.vehicle;
+      return c.json({
+        agencyId,
+        vehicle: {
+          agency_id: agencyId,
+          vehicle_id: lv.vehicleId,
+          fleet_number: lv.fleetNumber,
+          vehicle_type: lv.vehicleMode ?? "rail",
+          metadata_source: "scheduled_timetable",
+        },
+        latest: {
+          agency_id: lv.agencyId,
+          source_vehicle_id: lv.sourceVehicleId,
+          vehicle_id: lv.vehicleId,
+          fleet_number: lv.fleetNumber,
+          route_id: lv.routeId,
+          route_short_name: lv.routeShortName ?? lv.routeId,
+          route_long_name: lv.routeLongName ?? null,
+          route_type: lv.routeType ?? null,
+          vehicle_mode: lv.vehicleMode ?? "rail",
+          position_source: "scheduled",
+          headsign: lv.headsign ?? null,
+          trip_id: lv.tripId,
+          block_id: null,
+          direction_id: lv.directionId,
+          lat: lv.lat,
+          lon: lv.lon,
+          bearing_deg: lv.bearingDeg,
+          speed_mps: lv.speedMps,
+          schedule_deviation_sec: 0,
+          current_status: lv.currentStatus,
+          stop_id: lv.stopId,
+          stop_name: lv.stopName ?? null,
+          stop_sequence: lv.stopSequence,
+          occupancy_status: null,
+          observed_at: lv.observedAt,
+          received_at: lv.receivedAt,
+          timestamp_basis: "receipt",
+          match_method: "scheduled_timetable",
+          match_confidence: 0.65,
+        },
+        aliases: [],
+        recentAssignments: [],
+      });
+    }
+  }
+
   const [vehicle, rawLiveVeh, lookups, aliases, assignments] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM vehicles WHERE agency_id = ? AND (vehicle_id = ? OR fleet_number = ?) LIMIT 1")
       .bind(agencyId, vehicleId, vehicleId)
@@ -581,7 +674,7 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
       .all(),
   ]);
 
-  const liveVeh = rawLiveVeh ? enrichVehicleWithLookups(rawLiveVeh, lookups) : null;
+  const liveVeh = rawLiveVeh ? enrichVehicleWithLookups(rawLiveVeh, lookups, agencyId) : null;
 
   const latest = liveVeh
     ? {
@@ -643,6 +736,19 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle/ride", async (c) => {
   const agencyId = c.req.param("id");
   const vehicleId = decodeURIComponent(c.req.param("vehicle"));
 
+  if (vehicleId.startsWith("sched:")) {
+    const sched = getScheduledRailRideTimeline(agencyId, vehicleId, Date.now());
+    if (sched) {
+      return c.json({
+        agencyId,
+        vehicle: sched.vehicle,
+        routeShape: sched.routeShape,
+        stops: sched.stops,
+        serverTime: new Date().toISOString(),
+      });
+    }
+  }
+
   const [rawVeh, lookups, versionId] = await Promise.all([
     c.env.AGENCY_LIVE.getByName(agencyId).getVehicle(vehicleId),
     getAgencyStaticLookups(c.env, agencyId),
@@ -653,7 +759,7 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle/ride", async (c) => {
     return c.json(createProblemDetails(404, "Vehicle not live", `Vehicle ${vehicleId} is not currently reporting live GPS.`), 404);
   }
 
-  const veh = enrichVehicleWithLookups(rawVeh, lookups);
+  const veh = enrichVehicleWithLookups(rawVeh, lookups, agencyId);
   let patternTripId = veh.patternTripId ?? null;
   let routeShape: { type: "LineString"; coordinates: Array<[number, number]> } | null = null;
 
@@ -850,7 +956,7 @@ app.get("/api/v1/nearby", async (c) => {
         getAgencyStaticLookups(c.env, id),
       ]);
       return snap.vehicles.map((v) => {
-        const enriched = enrichVehicleWithLookups(v, lookups);
+        const enriched = enrichVehicleWithLookups(v, lookups, id);
         return {
           ...enriched,
           distanceMeters: Math.round(haversineMeters(lat, lon, v.lat, v.lon)),
@@ -1029,7 +1135,7 @@ app.get("/api/v1/plan", async (c) => {
       const tripUpdates = await c.env.AGENCY_LIVE.getByName(ag)
         .getTripUpdates({ serviceDate: liveCtx.serviceDate })
         .catch(() => []);
-      const enrichedVehicles = snap.vehicles.map((v) => enrichVehicleWithLookups(v, lookups));
+      const enrichedVehicles = snap.vehicles.map((v) => enrichVehicleWithLookups(v, lookups, ag));
       agencyInfo.set(ag, {
         timezone: tz,
         serviceDate: departCtx.serviceDate,
@@ -1580,6 +1686,132 @@ app.get("/api/v1/plan", async (c) => {
     });
   }
 
+  // 3. Include TTC Subway & GO Rail direct corridor options so trains always show in the planner
+  const railCandidates = findRailPlanCandidates({
+    fromLat,
+    fromLon,
+    toLat,
+    toLon,
+    departAtMs,
+    agencyFilter,
+  });
+
+  for (const rc of railCandidates) {
+    const { corridor, originStation, destStation } = rc;
+    const walkStartMin = Math.max(1, Math.round(originStation.distMeters / 78));
+    const walkEndMin = Math.max(1, Math.round(destStation.distMeters / 78));
+    const walkMinutes = walkStartMin + walkEndMin;
+    const readyMs = departAtMs + walkStartMin * 60_000;
+    const liveVehiclesForRail = (agencyInfo.get(corridor.agencyId)?.vehicles ?? []).filter(
+      (v) =>
+        v.freshness !== "stale" &&
+        (v.routeId === corridor.routeId || v.routeShortName?.toUpperCase() === corridor.shortName.toUpperCase())
+    );
+    const activeTrains =
+      liveVehiclesForRail.length > 0
+        ? liveVehiclesForRail.length
+        : generateScheduledRailVehicles(corridor.agencyId, nowMs).filter((v) => v.routeId === corridor.routeId).length;
+
+    const upcomingBuses: PlannedUpcomingBus[] = rc.upcomingDepartures.map((u) => ({
+      departureTime: u.departureTime,
+      arrivalTime: u.arrivalTime,
+      etaMinutes: u.etaMinutes,
+      waitMinutes: u.waitMinutes,
+      rideMinutes: u.rideMinutes,
+      isLive: false,
+      source: "scheduled",
+      vehicleId: null,
+      fleetNumber: null,
+      tripId: null,
+      headsign: u.headsign,
+      stopsAway: null,
+      delaySec: null,
+    }));
+
+    const firstDep = upcomingBuses[0] ?? null;
+    const waitMinutes = firstDep ? firstDep.waitMinutes : 0;
+    const arriveMs = firstDep
+      ? Date.parse(firstDep.arrivalTime) + walkEndMin * 60_000
+      : departAtMs + (walkMinutes + rc.rideMinutes) * 60_000;
+    const totalMinutes = Math.max(walkMinutes + rc.rideMinutes, Math.round((arriveMs - departAtMs) / 60_000));
+    const rideDist = Math.round(haversineMeters(originStation.lat, originStation.lon, destStation.lat, destStation.lon) * 1.12);
+
+    const dupIdx = options.findIndex(
+      (o) =>
+        o.kind === "direct" &&
+        o.agencyId === corridor.agencyId &&
+        o.legs.some((l) => l.mode === "transit" && (l.routeId === corridor.routeId || l.routeShortName === corridor.shortName))
+    );
+    if (dupIdx !== -1 && options[dupIdx]!.serviceStatus === "live") {
+      continue;
+    }
+
+    const railOption: PlanOption = {
+      id: `rail-${corridor.agencyId}-${corridor.routeId}`,
+      kind: "direct",
+      agencyId: corridor.agencyId,
+      serviceStatus: firstDep ? "scheduled" : "no_upcoming",
+      leaveAt: departAtIso,
+      arriveAt: new Date(arriveMs).toISOString(),
+      nextDepartureAt: firstDep?.departureTime ?? null,
+      totalMinutes,
+      walkMinutes,
+      waitMinutes,
+      rideMinutes: rc.rideMinutes,
+      legs: [
+        {
+          mode: "walk",
+          fromName: "Origin",
+          toName: originStation.name,
+          toStopId: originStation.stopId,
+          distanceMeters: originStation.distMeters,
+          minutes: walkStartMin,
+          departureTime: departAtIso,
+          arrivalTime: new Date(readyMs).toISOString(),
+        },
+        {
+          mode: "transit",
+          agencyId: corridor.agencyId,
+          routeId: corridor.routeId,
+          routeShortName: corridor.shortName,
+          routeLongName: corridor.longName,
+          routeColor: corridor.color,
+          fromName: originStation.name,
+          fromStopId: originStation.stopId,
+          toName: destStation.name,
+          toStopId: destStation.stopId,
+          distanceMeters: rideDist,
+          minutes: rc.rideMinutes,
+          waitMinutes,
+          departureTime: firstDep?.departureTime ?? null,
+          arrivalTime: firstDep?.arrivalTime ?? null,
+          stopsCount: rc.stopsCount,
+          activeVehicles: activeTrains,
+          nearestVehicleId: liveVehiclesForRail[0]?.vehicleId ?? null,
+          nearestFleetNumber: liveVehiclesForRail[0]?.fleetNumber ?? null,
+          nearestHeadsign: rc.headsign,
+          upcomingBuses,
+        },
+        {
+          mode: "walk",
+          fromName: destStation.name,
+          fromStopId: destStation.stopId,
+          toName: "Destination",
+          distanceMeters: destStation.distMeters,
+          minutes: walkEndMin,
+          departureTime: firstDep?.arrivalTime ?? null,
+          arrivalTime: new Date(arriveMs).toISOString(),
+        },
+      ],
+    };
+
+    if (dupIdx !== -1) {
+      options[dupIdx] = railOption;
+    } else {
+      options.push(railOption);
+    }
+  }
+
   // Sort: live/scheduled upcoming routes first, then by arrival time (with slight preference for direct over transfer)
   const statusRank = (s: PlanOption["serviceStatus"]) => (s === "live" ? 0 : s === "scheduled" ? 1 : 2);
   options.sort((a, b) => {
@@ -1894,7 +2126,7 @@ interface TripLookupBlob {
 }
 
 interface AgencyStaticLookups {
-  routes: Map<string, { shortName: string; longName: string; color: string | null }>;
+  routes: Map<string, { shortName: string; longName: string; color: string | null; routeType: number | null }>;
   stops: Record<string, string>;
   trips: TripLookupBlob | null;
 }
@@ -1912,26 +2144,55 @@ async function getAgencyStaticLookups(env: Env, agencyId: string): Promise<Agenc
     env.CACHE.get(`trip_lookup:${agencyId}`, "json").catch(() => null),
   ]);
 
-  let routes = new Map<string, { shortName: string; longName: string; color: string | null }>();
+  let routes = new Map<string, { shortName: string; longName: string; color: string | null; routeType: number | null }>();
   if (Array.isArray(routesRaw)) {
     routes = new Map(
-      (routesRaw as Array<{ route_id: string; short_name: string; long_name: string; color: string | null }>).map((r) => [
+      (
+        routesRaw as Array<{
+          route_id: string;
+          short_name: string;
+          long_name: string;
+          color: string | null;
+          route_type?: number | null;
+        }>
+      ).map((r) => [
         r.route_id,
-        { shortName: r.short_name, longName: r.long_name, color: r.color },
+        {
+          shortName: r.short_name,
+          longName: r.long_name,
+          color: r.color,
+          routeType: r.route_type !== undefined && r.route_type !== null ? Number(r.route_type) : null,
+        },
       ])
     );
   } else {
     const versionId = await getActiveVersionId(env.DB, agencyId);
     if (versionId) {
       const rows = await env.DB.prepare(
-        "SELECT route_id, short_name, long_name, color FROM routes WHERE agency_id = ? AND version_id = ?"
+        "SELECT route_id, short_name, long_name, color, route_type FROM routes WHERE agency_id = ? AND version_id = ?"
       )
         .bind(agencyId, versionId)
-        .all<{ route_id: string; short_name: string; long_name: string; color: string | null }>();
+        .all<{ route_id: string; short_name: string; long_name: string; color: string | null; route_type: number | null }>();
       routes = new Map(
-        rows.results.map((r) => [r.route_id, { shortName: r.short_name, longName: r.long_name, color: r.color }])
+        rows.results.map((r) => [
+          r.route_id,
+          { shortName: r.short_name, longName: r.long_name, color: r.color, routeType: r.route_type ?? null },
+        ])
       );
       await env.CACHE.put(`routes:${agencyId}`, JSON.stringify(rows.results), { expirationTtl: 600 }).catch(() => undefined);
+    }
+  }
+
+  // Ensure built-in TTC Subway & GO Rail corridors are always present in route lookups
+  for (const corridor of RAIL_CORRIDORS) {
+    if (corridor.agencyId !== agencyId) continue;
+    if (!routes.has(corridor.routeId)) {
+      routes.set(corridor.routeId, {
+        shortName: corridor.shortName,
+        longName: corridor.longName,
+        color: corridor.color,
+        routeType: corridor.routeType,
+      });
     }
   }
 
@@ -1946,6 +2207,7 @@ async function getAgencyStaticLookups(env: Env, agencyId: string): Promise<Agenc
 
 function enrichVehicleWithLookups<
   T extends {
+    agencyId?: string;
     routeId: string | null;
     tripId: string | null;
     stopId: string | null;
@@ -1953,24 +2215,37 @@ function enrichVehicleWithLookups<
     routeShortName?: string | null;
     routeLongName?: string | null;
     routeColor?: string | null;
+    routeType?: number | null;
+    vehicleMode?: "bus" | "streetcar" | "subway" | "rail" | "ferry" | "unknown";
+    positionSource?: "live" | "scheduled";
     headsign?: string | null;
     stopName?: string | null;
     patternTripId?: string | null;
   },
->(v: T, lookups: AgencyStaticLookups): T {
+>(v: T, lookups: AgencyStaticLookups, agencyIdOverride?: string): T {
+  const ag = agencyIdOverride ?? v.agencyId ?? "";
   const rm = v.routeId ? lookups.routes.get(v.routeId) : undefined;
+  const railCorridor = getRailCorridor(ag, rm?.shortName ?? v.routeId);
   const tm = v.tripId && lookups.trips?.m ? lookups.trips.m[v.tripId] : undefined;
   const headsign = tm ? lookups.trips!.h[tm[0]] || null : v.headsign ?? null;
   const directionId = tm ? tm[1] : v.directionId;
   const patternTripId = tm ? lookups.trips!.p[tm[2]] || null : null;
   const stopName = v.stopId ? lookups.stops[v.stopId] || null : null;
+  const routeShortName = rm?.shortName ?? railCorridor?.shortName ?? v.routeId;
+  const routeLongName = rm?.longName ?? railCorridor?.longName ?? null;
+  const routeColorVal = railCorridor?.color ?? rm?.color ?? null;
+  const routeType = rm?.routeType ?? railCorridor?.routeType ?? v.routeType ?? null;
+  const vehicleMode = inferVehicleMode(ag, v.routeId, routeShortName, routeType);
 
   return {
     ...v,
     directionId,
-    routeShortName: rm?.shortName ?? v.routeId,
-    routeLongName: rm?.longName ?? null,
-    routeColor: rm?.color ?? null,
+    routeShortName,
+    routeLongName,
+    routeColor: routeColorVal,
+    routeType,
+    vehicleMode,
+    positionSource: v.positionSource ?? "live",
     headsign,
     patternTripId,
     stopName,
@@ -2007,34 +2282,76 @@ app.get("/api/v1/agencies/:id/routes", async (c) => {
     }
   }
 
-  // Merge static routes with any live-observed route IDs if static feed hasn't been imported yet
+  // Merge static routes with any live-observed route IDs + built-in TTC Subway & GO Rail lines
+  const scheduledTrains = generateScheduledRailVehicles(agencyId, Date.now());
+  const scheduledTrainCounts = new Map<string, number>();
+  for (const t of scheduledTrains) {
+    if (t.routeId) scheduledTrainCounts.set(t.routeId, (scheduledTrainCounts.get(t.routeId) ?? 0) + 1);
+  }
+
   const routeMap = new Map<string, Record<string, unknown>>();
+  // Put rail corridors at the top so subway/GO train lines are immediately easy to find
+  for (const corridor of RAIL_CORRIDORS) {
+    if (corridor.agencyId !== agencyId) continue;
+    const liveCount = activeMap.get(corridor.routeId) ?? 0;
+    routeMap.set(corridor.routeId, {
+      routeId: corridor.routeId,
+      shortName: corridor.shortName,
+      longName: corridor.longName,
+      description: null,
+      routeType: corridor.routeType,
+      color: corridor.color,
+      textColor: corridor.textColor,
+      directions: [
+        { directionId: 0, headsign: corridor.headsignFwd },
+        { directionId: 1, headsign: corridor.headsignRev },
+      ],
+      activeVehicles: liveCount > 0 ? liveCount : (scheduledTrainCounts.get(corridor.routeId) ?? 0),
+      activeAlerts: alertMap.get(corridor.routeId) ?? 0,
+      source: liveCount > 0 ? "live" : "scheduled",
+    });
+  }
+
   for (const r of staticRoutes.results) {
     const id = String(r.route_id);
+    const shortName = String(r.short_name || id);
+    const railMatch = getRailCorridor(agencyId, shortName);
+    const liveCount = activeMap.get(id) ?? 0;
+    const existingRail = railMatch ? routeMap.get(railMatch.routeId) : undefined;
+    // Avoid duplicating a rail corridor already added under its canonical short code
+    if (railMatch && id !== railMatch.routeId && existingRail) {
+      if (liveCount > 0) {
+        existingRail.activeVehicles = liveCount;
+        existingRail.source = "live";
+      }
+      continue;
+    }
     routeMap.set(id, {
       routeId: id,
-      shortName: r.short_name,
+      shortName,
       longName: r.long_name,
       description: r.description,
-      routeType: r.route_type,
-      color: r.color,
-      textColor: r.text_color,
+      routeType: railMatch?.routeType ?? r.route_type,
+      color: railMatch?.color ?? r.color,
+      textColor: railMatch?.textColor ?? r.text_color,
       directions: JSON.parse(String(r.directions_json || "[]")),
-      activeVehicles: activeMap.get(id) ?? 0,
+      activeVehicles: liveCount > 0 ? liveCount : (scheduledTrainCounts.get(id) ?? 0),
       activeAlerts: alertMap.get(id) ?? 0,
       source: "scheduled",
     });
   }
   for (const [id, count] of activeMap) {
     if (!routeMap.has(id)) {
+      const railMatch = getRailCorridor(agencyId, id);
+      if (railMatch && routeMap.has(railMatch.routeId)) continue;
       routeMap.set(id, {
         routeId: id,
-        shortName: id,
-        longName: `Route ${id} (observed live)`,
+        shortName: railMatch?.shortName ?? id,
+        longName: railMatch?.longName ?? `Route ${id} (observed live)`,
         description: null,
-        routeType: 3,
-        color: null,
-        textColor: null,
+        routeType: railMatch?.routeType ?? (inferVehicleMode(agencyId, id) === "streetcar" ? 0 : 3),
+        color: railMatch?.color ?? null,
+        textColor: railMatch?.textColor ?? null,
         directions: [],
         activeVehicles: count,
         activeAlerts: alertMap.get(id) ?? 0,
@@ -2099,14 +2416,39 @@ app.get("/api/v1/agencies/:id/routes/:route", async (c) => {
     stops = stopRes.results;
   }
 
+  const railCorridor = getRailCorridor(agencyId, routeId);
+  if (stops.length === 0 && railCorridor) {
+    stops = railCorridor.stations.map((s, idx) => ({
+      stop_sequence: idx + 1,
+      arrival_sec: null,
+      departure_sec: null,
+      stop_id: s.stopId,
+      stop_code: null,
+      name: s.name,
+      lat: s.lat,
+      lon: s.lon,
+      wheelchair_boarding: 1,
+    }));
+  }
+
   const routeAlerts = alerts.results.filter((a) => {
     const ents = JSON.parse(String(a.informed_entities_json || "[]")) as Array<{ routeId?: string }>;
-    return ents.some((e) => e.routeId === routeId);
+    return ents.some((e) => e.routeId === routeId || (railCorridor && e.routeId === railCorridor.shortName));
   });
 
-  const liveDelays = liveSnap.vehicles
+  const lookups = await getAgencyStaticLookups(c.env, agencyId);
+  let activeVehicles = liveSnap.vehicles.map((v) => enrichVehicleWithLookups(v, lookups, agencyId));
+  if (activeVehicles.length === 0 && railCorridor) {
+    activeVehicles = generateScheduledRailVehicles(agencyId, Date.now()).filter((v) => v.routeId === railCorridor.routeId);
+  }
+
+  const liveDelays = activeVehicles
     .map((v) => v.scheduleDeviationSec)
     .filter((d): d is number => d !== null);
+
+  const fallbackShape = railCorridor
+    ? { type: "LineString" as const, coordinates: railCorridor.stations.map((s) => [s.lon, s.lat] as [number, number]) }
+    : null;
 
   return c.json({
     agencyId,
@@ -2116,22 +2458,37 @@ app.get("/api/v1/agencies/:id/routes/:route", async (c) => {
           shortName: routeRow.short_name,
           longName: routeRow.long_name,
           description: routeRow.description,
-          routeType: routeRow.route_type,
-          color: routeRow.color,
-          textColor: routeRow.text_color,
+          routeType: railCorridor?.routeType ?? routeRow.route_type,
+          color: railCorridor?.color ?? routeRow.color,
+          textColor: railCorridor?.textColor ?? routeRow.text_color,
           directions: JSON.parse(String(routeRow.directions_json || "[]")),
-          shapeGeoJson: routeRow.shape_geojson ? JSON.parse(String(routeRow.shape_geojson)) : null,
-          geometrySource: routeRow.shape_geojson ? "static_gtfs" : "unavailable",
+          shapeGeoJson: routeRow.shape_geojson ? JSON.parse(String(routeRow.shape_geojson)) : fallbackShape,
+          geometrySource: routeRow.shape_geojson ? "static_gtfs" : fallbackShape ? "static_gtfs" : "unavailable",
         }
-      : {
-          routeId,
-          shortName: routeId,
-          longName: `Route ${routeId}`,
-          directions: [],
-          shapeGeoJson: null,
-          geometrySource: "unavailable",
-        },
-    activeVehicles: liveSnap.vehicles,
+      : railCorridor
+        ? {
+            routeId: railCorridor.routeId,
+            shortName: railCorridor.shortName,
+            longName: railCorridor.longName,
+            routeType: railCorridor.routeType,
+            color: railCorridor.color,
+            textColor: railCorridor.textColor,
+            directions: [
+              { directionId: 0, headsign: railCorridor.headsignFwd },
+              { directionId: 1, headsign: railCorridor.headsignRev },
+            ],
+            shapeGeoJson: fallbackShape,
+            geometrySource: "static_gtfs",
+          }
+        : {
+            routeId,
+            shortName: routeId,
+            longName: `Route ${routeId}`,
+            directions: [],
+            shapeGeoJson: null,
+            geometrySource: "unavailable",
+          },
+    activeVehicles,
     stops,
     trips: trips.results,
     alerts: routeAlerts,
@@ -2195,6 +2552,12 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
         .bind(agencyId, versionId, stopId, stopId)
         .first<Record<string, unknown>>()
     : null;
+
+  // Fallback for built-in TTC Subway & GO Rail station IDs (e.g. ttc-l1-union, go-union)
+  const matchingRailCorridors = RAIL_CORRIDORS.filter(
+    (rc) => rc.agencyId === agencyId && rc.stations.some((s) => s.stopId === stopId)
+  );
+  const railStationMatch = matchingRailCorridors[0]?.stations.find((s) => s.stopId === stopId) ?? null;
 
   const resolvedStopId = stop ? String(stop.stop_id) : stopId;
 
@@ -2309,6 +2672,51 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
     }
   }
 
+  // Synthesize timetable departures for built-in TTC Subway / GO Rail stations when DB has no rows
+  if (departures.length === 0 && matchingRailCorridors.length > 0) {
+    const serviceMin = ctx.serviceSeconds / 60;
+    const isPeak = (serviceMin % 1440 >= 420 && serviceMin % 1440 <= 570) || (serviceMin % 1440 >= 930 && serviceMin % 1440 <= 1140);
+    for (const corridor of matchingRailCorridors) {
+      const st = corridor.stations.find((s) => s.stopId === stopId);
+      if (!st) continue;
+      const totalRunMin = corridor.stations[corridor.stations.length - 1]!.offsetMin;
+      const headway = isPeak ? corridor.peakHeadwayMin : corridor.offPeakHeadwayMin;
+      for (const dir of [0, 1] as const) {
+        const offset = dir === 0 ? st.offsetMin : totalRunMin - st.offsetMin;
+        if (offset >= totalRunMin) continue; // terminus — no departures in this direction
+        const phase = dir === 1 ? Math.floor(headway / 2) : 0;
+        const firstDep = Math.max(
+          corridor.startMin + offset,
+          Math.ceil((serviceMin - offset - phase) / headway) * headway + phase + offset
+        );
+        for (let k = 0; k < 3; k++) {
+          const depMin = firstDep + k * headway;
+          const tripStart = depMin - offset;
+          if (tripStart < corridor.startMin || tripStart > corridor.endMin || depMin > serviceMin + 120) continue;
+          const etaSec = Math.max(0, Math.round((depMin - serviceMin) * 60));
+          const predMs = nowMs + etaSec * 1000;
+          departures.push({
+            tripId: `sched-${corridor.routeId}-${dir}-${Math.round(tripStart)}`,
+            routeId: corridor.routeId,
+            headsign: dir === 0 ? corridor.headsignFwd : corridor.headsignRev,
+            directionId: dir,
+            vehicleId: null,
+            fleetNumber: null,
+            scheduleRelationship: "SCHEDULED",
+            scheduledTime: formatSecondsToClock(depMin * 60),
+            scheduledSec: Math.round(depMin * 60),
+            predictedTime: new Date(predMs).toISOString(),
+            etaSeconds: etaSec,
+            uncertaintySec: 90,
+            predictionSource: "scheduled",
+            confidence: 0.65,
+            basis: "Rail timetable",
+          });
+        }
+      }
+    }
+  }
+
   departures.sort((a, b) => Number(a.etaSeconds) - Number(b.etaSeconds));
 
   const stopAlerts = alerts.results.filter((a) => {
@@ -2317,11 +2725,17 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
   });
 
   // Approaching vehicles within 2.5km if stop coordinates known
-  const approachingVehicles = stop
-    ? liveSnap.vehicles
+  const effectiveStop =
+    stop ??
+    (railStationMatch
+      ? { stop_id: railStationMatch.stopId, name: railStationMatch.name, lat: railStationMatch.lat, lon: railStationMatch.lon }
+      : null);
+
+  const approachingVehicles = effectiveStop
+    ? [...liveSnap.vehicles, ...generateScheduledRailVehicles(agencyId, nowMs)]
         .map((v) => ({
           ...v,
-          distanceMeters: Math.round(haversineMeters(v.lat, v.lon, Number(stop.lat), Number(stop.lon))),
+          distanceMeters: Math.round(haversineMeters(v.lat, v.lon, Number(effectiveStop.lat), Number(effectiveStop.lon))),
         }))
         .filter((v) => v.distanceMeters <= 2500)
         .sort((a, b) => a.distanceMeters - b.distanceMeters)
@@ -2333,7 +2747,7 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
     timezone: tz,
     serviceDate: ctx.serviceDate,
     serverTime: now.toISOString(),
-    stop: stop ?? { stop_id: resolvedStopId, name: `Stop ${resolvedStopId}` },
+    stop: effectiveStop ?? { stop_id: resolvedStopId, name: `Stop ${resolvedStopId}` },
     departures,
     approachingVehicles,
     alerts: stopAlerts,

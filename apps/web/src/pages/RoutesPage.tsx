@@ -21,11 +21,20 @@ interface RouteRow {
   source: string;
 }
 
+function routeTypeLabel(routeType: number): string {
+  if (routeType === 1) return "Subway";
+  if (routeType === 2) return "Train";
+  if (routeType === 0) return "Streetcar";
+  if (routeType === 4) return "Ferry";
+  return "Bus";
+}
+
 export function RoutesPage() {
   const { agencyId } = usePreferences();
   const effectiveAgency = agencyId === "all" ? "guelph" : agencyId;
   const [query, setQuery] = useState("");
   const [onlyActive, setOnlyActive] = useState(false);
+  const [modeFilter, setModeFilter] = useState<"all" | "rail" | "streetcar" | "bus">("all");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["routes", effectiveAgency],
@@ -40,6 +49,9 @@ export function RoutesPage() {
     const q = query.trim().toLowerCase();
     return (data?.routes ?? []).filter((r) => {
       if (onlyActive && r.activeVehicles === 0) return false;
+      if (modeFilter === "rail" && r.routeType !== 1 && r.routeType !== 2) return false;
+      if (modeFilter === "streetcar" && r.routeType !== 0) return false;
+      if (modeFilter === "bus" && r.routeType !== 3) return false;
       if (!q) return true;
       return (
         r.shortName.toLowerCase().includes(q) ||
@@ -47,7 +59,7 @@ export function RoutesPage() {
         r.routeId.toLowerCase().includes(q)
       );
     });
-  }, [data, query, onlyActive]);
+  }, [data, query, onlyActive, modeFilter]);
 
   return (
     <div className="sh-page">
@@ -62,6 +74,28 @@ export function RoutesPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {(effectiveAgency === "ttc" || effectiveAgency === "go") && (
+            <div role="group" aria-label="Filter routes by mode" className="sh-seg">
+              {(
+                effectiveAgency === "ttc"
+                  ? ([
+                      ["all", "All"],
+                      ["rail", "Subway"],
+                      ["streetcar", "Streetcar"],
+                      ["bus", "Bus"],
+                    ] as const)
+                  : ([
+                      ["all", "All"],
+                      ["rail", "Trains"],
+                      ["bus", "Buses"],
+                    ] as const)
+              ).map(([key, label]) => (
+                <button key={key} type="button" aria-pressed={modeFilter === key} onClick={() => setModeFilter(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <input
             type="search"
             value={query}
@@ -90,6 +124,7 @@ export function RoutesPage() {
             <tr>
               <th>Route</th>
               <th>Name</th>
+              <th>Mode</th>
               <th>Live fleet</th>
               <th>Alerts</th>
               <th>Provenance</th>
@@ -99,7 +134,7 @@ export function RoutesPage() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-8 text-center" style={{ color: "var(--text-muted)" }}>
+                <td colSpan={7} className="py-8 text-center" style={{ color: "var(--text-muted)" }}>
                   No routes match your filter right now.
                 </td>
               </tr>
@@ -113,7 +148,7 @@ export function RoutesPage() {
                     >
                       <RouteBadge
                         label={r.shortName}
-                        color={routeColor(effectiveAgency, r.routeId, r.color)}
+                        color={routeColor(effectiveAgency, r.shortName || r.routeId, r.color)}
                       />
                     </Link>
                   </td>
@@ -125,6 +160,7 @@ export function RoutesPage() {
                       {r.longName}
                     </Link>
                   </td>
+                  <td className="text-xs sh-muted whitespace-nowrap">{routeTypeLabel(r.routeType)}</td>
                   <td>
                     {r.activeVehicles > 0 ? (
                       <span className="sh-pill sh-pill-ok tabular-nums">

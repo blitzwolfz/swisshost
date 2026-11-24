@@ -345,6 +345,20 @@ export function validateObservationQuality(
   return { valid: true, flags: Array.from(new Set(flags)) };
 }
 
+export {
+  RAIL_CORRIDORS,
+  findRailPlanCandidates,
+  generateScheduledRailVehicles,
+  getRailCorridor,
+  getRailCorridorsForAgency,
+  getScheduledRailRideTimeline,
+  inferVehicleMode,
+  isRailMode,
+  type RailCorridor,
+  type RailCorridorGeo,
+  type RailStation,
+} from "./rail-networks";
+
 export function resolveFleetNumber(
   sourceVehicleId: string,
   label: string | null

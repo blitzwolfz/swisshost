@@ -189,6 +189,9 @@ export interface LiveVehicleState {
   routeShortName?: string | null;
   routeLongName?: string | null;
   routeColor?: string | null;
+  routeType?: number | null;
+  vehicleMode?: TransitMode;
+  positionSource?: "live" | "scheduled";
   tripId: string | null;
   patternTripId?: string | null;
   headsign?: string | null;
