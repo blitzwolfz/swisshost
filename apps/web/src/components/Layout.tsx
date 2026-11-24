@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Bus, History as HistoryIcon, Map as MapIcon, MapPin, Route as RouteIcon, Search, Settings, Star, WifiOff, X } from "lucide-react";
+import { Bus, Download, History as HistoryIcon, Map as MapIcon, MapPin, Route as RouteIcon, Search, Settings, Star, WifiOff, X } from "lucide-react";
 import { apiJson, type AgencySummary } from "../lib/api";
 import { usePreferences, type ThemeMode } from "../lib/preferences";
+import { usePwaInstall } from "../hooks/usePwaInstall";
 
 interface SearchResponse {
   query: string;
@@ -56,6 +57,7 @@ function AgencySwitcher({
 export function Layout() {
   const { agencyId, setAgencyId, theme, setTheme, units, setUnits, interpolate, setInterpolate, favorites, online } =
     usePreferences();
+  const { isStandalone } = usePwaInstall();
   const [searchText, setSearchText] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -329,6 +331,17 @@ export function Layout() {
               {favorites.length > 0 && <span className="tabular-nums">{favorites.length}</span>}
             </Link>
 
+            {!isStandalone && (
+              <Link
+                to="/install"
+                className="sh-btn sh-btn-icon no-underline"
+                aria-label="Save as app"
+                title="Save as app (PWA)"
+              >
+                <Download size={16} />
+              </Link>
+            )}
+
             <div ref={settingsRef} className="relative">
               <button
                 type="button"
@@ -399,6 +412,7 @@ export function Layout() {
                   <nav aria-label="More" className="grid grid-cols-2 border-t pt-3 gap-y-2" style={{ borderColor: "var(--ink)" }}>
                     <Link to="/alerts">Service alerts</Link>
                     <Link to="/status">Feed status</Link>
+                    <Link to="/install">Save as app</Link>
                     <Link to="/account">Account</Link>
                     <Link to="/admin">Admin</Link>
                   </nav>
@@ -454,6 +468,7 @@ export function Layout() {
             <nav aria-label="Footer" className="col-span-12 md:col-span-6 flex flex-wrap gap-x-6 gap-y-2 md:justify-end">
               <Link to="/alerts">Alerts</Link>
               <Link to="/status">Feed status</Link>
+              <Link to="/install">Save as app</Link>
               <a href="/openapi.json" target="_blank" rel="noreferrer">
                 API
               </a>

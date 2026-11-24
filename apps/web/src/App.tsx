@@ -5,6 +5,7 @@ import { Layout } from "./components/Layout";
 const LiveMapPage = lazy(() => import("./pages/LiveMapPage"));
 const HistoryPage = lazy(() => import("./pages/HistoryPage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
+const InstallPage = lazy(() => import("./pages/InstallPage"));
 const RoutesPage = lazy(() => import("./pages/RoutesPage").then((m) => ({ default: m.RoutesPage })));
 const RouteDetailPage = lazy(() => import("./pages/RoutesPage").then((m) => ({ default: m.RouteDetailPage })));
 const VehiclesPage = lazy(() => import("./pages/VehiclesPage").then((m) => ({ default: m.VehiclesPage })));
@@ -141,6 +142,14 @@ export function App() {
             element={
               <Suspense fallback={<PageFallback />}>
                 <AccountPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/install"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <InstallPage />
               </Suspense>
             }
           />
