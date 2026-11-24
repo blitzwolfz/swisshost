@@ -37,6 +37,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
   private feedStatus: FeedHealthStatus = "unknown";
   private lastSuccessAt: string | null = null;
   private staleAfterSeconds = 120;
+  private lastPersistedMs = 0;
 
   private vehicles = new Map<string, StoredVehicleEntry>();
   private knownVehicleIds = new Set<string>();
@@ -45,6 +46,67 @@ export class AgencyLiveDO extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Rehydrate the latest compact snapshot row after Cloudflare DO hibernation (1 row read)
+    ctx.blockConcurrencyWhile(async () => {
+      try {
+        const rows = this.ctx.storage.sql
+          .exec<{ value: string }>("SELECT value FROM live_snapshot WHERE key = 'latest'")
+          .toArray();
+        if (!rows[0]?.value) return;
+        const parsed = JSON.parse(rows[0].value) as {
+          agencyId?: string;
+          cursor?: number;
+          feedStatus?: FeedHealthStatus;
+          lastSuccessAt?: string | null;
+          staleAfterSeconds?: number;
+          vehicles?: Array<[string, StoredVehicleEntry]>;
+        };
+        if (parsed.agencyId) this.agencyId = parsed.agencyId;
+        if (typeof parsed.cursor === "number") this.cursor = parsed.cursor;
+        if (parsed.feedStatus) this.feedStatus = parsed.feedStatus;
+        if (parsed.lastSuccessAt !== undefined) this.lastSuccessAt = parsed.lastSuccessAt;
+        if (typeof parsed.staleAfterSeconds === "number") this.staleAfterSeconds = parsed.staleAfterSeconds;
+        if (Array.isArray(parsed.vehicles)) {
+          const cutoffMs = Date.now() - 15 * 60_000;
+          for (const [id, entry] of parsed.vehicles) {
+            if (entry && entry.receivedMs >= cutoffMs) {
+              this.vehicles.set(id, entry);
+              this.knownVehicleIds.add(entry.state.vehicleId);
+            }
+          }
+        }
+      } catch {
+        // Table not yet created on a brand-new DO; will be initialized on first ingest
+      }
+    });
+  }
+
+  /** Persist the whole live map as 1 single SQLite row (max once per 45s) so hibernation never loses data. */
+  private persistSnapshotBestEffort(nowMs: number): void {
+    if (nowMs - this.lastPersistedMs < 45_000) return;
+    this.lastPersistedMs = nowMs;
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS live_snapshot (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      const payload = JSON.stringify({
+        agencyId: this.agencyId,
+        cursor: this.cursor,
+        feedStatus: this.feedStatus,
+        lastSuccessAt: this.lastSuccessAt,
+        staleAfterSeconds: this.staleAfterSeconds,
+        vehicles: Array.from(this.vehicles.entries()),
+      });
+      this.ctx.storage.sql.exec(
+        "INSERT INTO live_snapshot (key, value) VALUES ('latest', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        payload
+      );
+    } catch {
+      // Non-fatal: RAM remains authoritative while awake
+    }
   }
 
   private hydrateVehicle(raw: LiveVehicleState, nowMs: number): LiveVehicleState {
@@ -236,6 +298,7 @@ export class AgencyLiveDO extends DurableObject<Env> {
     }
 
     this.broadcastDelta(deltaMsg, encodedDelta);
+    this.persistSnapshotBestEffort(nowMs);
 
     return {
       cursor: this.cursor,
@@ -450,16 +513,28 @@ export class AgencyLiveDO extends DurableObject<Env> {
     server.serializeAttachment({ agencyId, routeId } satisfies WsAttachment);
 
     const snapshot = await this.getSnapshot({ agencyId, routeId });
-    const msg: LiveWsServerMessage = {
-      type: "snapshot",
-      agencyId: snapshot.agencyId || agencyId,
-      cursor: snapshot.cursor,
-      serverTime: snapshot.serverTime,
-      feedStatus: snapshot.feedStatus,
-      lastSuccessAt: snapshot.lastSuccessAt,
-      vehicles: snapshot.vehicles,
-    };
-    server.send(JSON.stringify(msg));
+    // Avoid sending an empty snapshot from a cold/hibernated DO before its first poll
+    if (snapshot.vehicles.length > 0 || snapshot.cursor > 0) {
+      const msg: LiveWsServerMessage = {
+        type: "snapshot",
+        agencyId: snapshot.agencyId || agencyId,
+        cursor: snapshot.cursor,
+        serverTime: snapshot.serverTime,
+        feedStatus: snapshot.feedStatus,
+        lastSuccessAt: snapshot.lastSuccessAt,
+        vehicles: snapshot.vehicles,
+      };
+      server.send(JSON.stringify(msg));
+    } else {
+      server.send(
+        JSON.stringify({
+          type: "status",
+          agencyId: snapshot.agencyId || agencyId,
+          feedStatus: snapshot.feedStatus,
+          lastSuccessAt: snapshot.lastSuccessAt,
+        } satisfies LiveWsServerMessage)
+      );
+    }
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -500,17 +575,28 @@ export class AgencyLiveDO extends DurableObject<Env> {
       }
 
       const snap = await this.getSnapshot({ agencyId: parsed.agencyId, routeId: parsed.routeId });
-      ws.send(
-        JSON.stringify({
-          type: "snapshot",
-          agencyId: snap.agencyId || parsed.agencyId,
-          cursor: snap.cursor,
-          serverTime: snap.serverTime,
-          feedStatus: snap.feedStatus,
-          lastSuccessAt: snap.lastSuccessAt,
-          vehicles: snap.vehicles,
-        } satisfies LiveWsServerMessage)
-      );
+      if (snap.vehicles.length > 0 || snap.cursor > 0) {
+        ws.send(
+          JSON.stringify({
+            type: "snapshot",
+            agencyId: snap.agencyId || parsed.agencyId,
+            cursor: snap.cursor,
+            serverTime: snap.serverTime,
+            feedStatus: snap.feedStatus,
+            lastSuccessAt: snap.lastSuccessAt,
+            vehicles: snap.vehicles,
+          } satisfies LiveWsServerMessage)
+        );
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "status",
+            agencyId: snap.agencyId || parsed.agencyId,
+            feedStatus: snap.feedStatus,
+            lastSuccessAt: snap.lastSuccessAt,
+          } satisfies LiveWsServerMessage)
+        );
+      }
     }
   }
 

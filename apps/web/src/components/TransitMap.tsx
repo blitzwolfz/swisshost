@@ -397,33 +397,39 @@ function drawVehicleMarker(
   return ctx.getImageData(0, 0, w * scale, h * scale);
 }
 
-/** Directional heading pointer orbiting the vehicle marker to show direction of travel. */
-function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
+/**
+ * High-contrast directional heading pointer orbiting the vehicle marker.
+ * Uses theme ink (#16140F in light mode, #FFB000 in dark mode) with a crisp paper halo
+ * so it stays legible even directly on top of a same-coloured route or rail line.
+ */
+function drawHeading(selected: boolean, t: MapTheme): ImageData {
   const scale = 2;
-  const w = selected ? 16 : 13;
-  const h = selected ? 11 : 9;
+  const w = selected ? 18 : 15;
+  const h = selected ? 13 : 11;
   const canvas = document.createElement("canvas");
   canvas.width = w * scale;
   canvas.height = h * scale;
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
 
+  // Crisp paper halo so the dark/amber arrow pops cleanly against coloured route tracks
   ctx.beginPath();
   ctx.moveTo(w / 2, 0);
   ctx.lineTo(w, h);
-  ctx.lineTo(w / 2, h - 2.2);
+  ctx.lineTo(w / 2, h - 2.6);
   ctx.lineTo(0, h);
   ctx.closePath();
-  ctx.fillStyle = selected ? t.ink : t.paper;
+  ctx.fillStyle = t.paper;
   ctx.fill();
 
+  // Sharp high-contrast ink chevron
   ctx.beginPath();
-  ctx.moveTo(w / 2, 2);
-  ctx.lineTo(w - 2.2, h - 1.3);
-  ctx.lineTo(w / 2, h - 3.2);
-  ctx.lineTo(2.2, h - 1.3);
+  ctx.moveTo(w / 2, 2.2);
+  ctx.lineTo(w - 2.4, h - 1.6);
+  ctx.lineTo(w / 2, h - 3.8);
+  ctx.lineTo(2.4, h - 1.6);
   ctx.closePath();
-  ctx.fillStyle = selected ? t.ink : color;
+  ctx.fillStyle = selected ? t.accent : t.ink;
   ctx.fill();
 
   return ctx.getImageData(0, 0, w * scale, h * scale);
@@ -512,7 +518,7 @@ export function TransitMap({
           agencyId: v.agencyId,
           vehicleId: v.vehicleId,
           icon: `veh|${kind}|${color}|${selected ? 1 : 0}|${scheduled ? 1 : 0}|${lineNum}`,
-          headingIcon: `hdg|${color}|${selected ? 1 : 0}`,
+          headingIcon: `hdg|${selected ? 1 : 0}`,
           fleetSubLabel,
           selectedSubLabel,
           bearing: hasBearing ? v.bearingDeg : 0,
@@ -565,8 +571,8 @@ export function TransitMap({
           { pixelRatio: 2 }
         );
       } else if (id.startsWith("hdg|")) {
-        const [, color, sel] = id.split("|");
-        map.addImage(id, drawHeading(color!, sel === "1", t), { pixelRatio: 2 });
+        const [, sel] = id.split("|");
+        map.addImage(id, drawHeading(sel === "1", t), { pixelRatio: 2 });
       }
     });
 
@@ -729,7 +735,7 @@ export function TransitMap({
           "icon-image": ["get", "headingIcon"],
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
-          "icon-offset": ["case", ["boolean", ["get", "selected"], false], ["literal", [0, -23]], ["literal", [0, -19]]],
+          "icon-offset": ["case", ["boolean", ["get", "selected"], false], ["literal", [0, -25]], ["literal", [0, -21]]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },

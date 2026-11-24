@@ -59,6 +59,7 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
 
   const mapRef = useRef<Map<string, LiveVehicle>>(new Map());
   const cursorRef = useRef(0);
+  const lastUpdateMsRef = useRef(0);
 
   useEffect(() => {
     let closed = false;
@@ -66,11 +67,13 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let retryMs = 1500;
+    let consecutiveEmptyHttp = 0;
 
     mapRef.current = new Map();
     cursorRef.current = 0;
+    lastUpdateMsRef.current = 0;
 
-    const fetchSnapshot = async (mode: "connecting" | "polling" = "polling") => {
+    const fetchSnapshot = async (mode: "connecting" | "polling" | "live_ws" = "polling") => {
       try {
         if (agencyId === "all") {
           const agencyIds = ["guelph", "ttc", "go", "thunderbay"];
@@ -93,14 +96,20 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
             .filter((x): x is string => Boolean(x))
             .sort()
             .pop() ?? null;
-          setState({
-            vehicles: merged,
-            feedStatus: freshAny ? "fresh" : "stale",
-            lastSuccessAt: latestTs,
-            connection: "polling",
-            cursor: 0,
-            error: null,
-          });
+          if (merged.length > 0 || mapRef.current.size === 0) {
+            const m = new Map<string, LiveVehicle>();
+            for (const v of merged) m.set(`${v.agencyId}:${v.sourceVehicleId}`, v);
+            mapRef.current = m;
+            lastUpdateMsRef.current = Date.now();
+            setState({
+              vehicles: merged,
+              feedStatus: freshAny ? "fresh" : "stale",
+              lastSuccessAt: latestTs,
+              connection: "polling",
+              cursor: 0,
+              error: null,
+            });
+          }
           return;
         }
 
@@ -112,10 +121,22 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
           cursor: number;
         }>(`/api/v1/agencies/${encodeURIComponent(agencyId)}/vehicles${qs}`);
         if (closed) return;
+
+        // Guard against wiping live vehicles on a single transient empty response
+        if (data.vehicles.length === 0 && mapRef.current.size > 0 && data.feedStatus !== "missing_key") {
+          consecutiveEmptyHttp += 1;
+          if (consecutiveEmptyHttp < 2) {
+            return;
+          }
+        } else {
+          consecutiveEmptyHttp = 0;
+        }
+
         const m = new Map<string, LiveVehicle>();
         for (const v of data.vehicles) m.set(v.sourceVehicleId, v);
         mapRef.current = m;
         cursorRef.current = data.cursor;
+        lastUpdateMsRef.current = Date.now();
         setState({
           vehicles: data.vehicles,
           feedStatus: data.feedStatus,
@@ -126,9 +147,10 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
         });
       } catch (err) {
         if (closed) return;
+        // Keep existing vehicles on screen during transient network glitches
         setState((prev) => ({
           ...prev,
-          connection: "error",
+          connection: prev.vehicles.length > 0 ? "polling" : "error",
           error: err instanceof Error ? err.message : "Failed to load vehicles",
         }));
       }
@@ -167,6 +189,12 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
           const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
           if (msg.type === "snapshot") {
             const list = (msg.vehicles as LiveVehicle[]) ?? [];
+            const incomingCursor = Number(msg.cursor || 0);
+            // If DO woke cold/empty while we already have vehicles, trigger HTTP self-heal instead of wiping the map
+            if (list.length === 0 && incomingCursor === 0 && mapRef.current.size > 0) {
+              void fetchSnapshot("polling");
+              return;
+            }
             const prevMap = mapRef.current;
             const m = new Map<string, LiveVehicle>();
             for (const v of list) {
@@ -175,7 +203,8 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
             }
             preserveScheduledRail(prevMap, m);
             mapRef.current = m;
-            cursorRef.current = Number(msg.cursor || 0);
+            cursorRef.current = incomingCursor;
+            lastUpdateMsRef.current = Date.now();
             setState({
               vehicles: Array.from(m.values()),
               feedStatus: String(msg.feedStatus || "unknown"),
@@ -192,6 +221,7 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
               mapRef.current.set(v.sourceVehicleId, mergeEnrichedVehicle(mapRef.current.get(v.sourceVehicleId), v));
             }
             cursorRef.current = Number(msg.cursor || cursorRef.current);
+            lastUpdateMsRef.current = Date.now();
             setState((prev) => ({
               ...prev,
               vehicles: Array.from(mapRef.current.values()),
@@ -202,9 +232,13 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
               error: null,
             }));
           } else if (msg.type === "status") {
+            const nextStatus = String(msg.feedStatus || "");
+            if (nextStatus === "unknown" && mapRef.current.size === 0) {
+              void fetchSnapshot("polling");
+            }
             setState((prev) => ({
               ...prev,
-              feedStatus: String(msg.feedStatus || prev.feedStatus),
+              feedStatus: nextStatus || prev.feedStatus,
               lastSuccessAt: (msg.lastSuccessAt as string | null) ?? prev.lastSuccessAt,
             }));
           }
@@ -233,10 +267,11 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
       connectWs();
     }
 
-    // Periodic polling fallback (30s) — also advances scheduled rail trains smoothly for TTC/GO
+    // Periodic sync (30s): pings live WS and auto-triggers HTTP self-heal whenever updates stall > 65s or scheduled trains need advancing
     pollTimer = setInterval(() => {
       if (document.hidden) return;
       const hasScheduledRail = Array.from(mapRef.current.values()).some((v) => v.positionSource === "scheduled");
+      const staleSync = Date.now() - lastUpdateMsRef.current > 65_000;
       if (agencyId === "all" || !ws || ws.readyState !== WebSocket.OPEN) {
         void fetchSnapshot("polling");
       } else {
@@ -245,14 +280,15 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
         } catch {
           // ignore
         }
-        if (hasScheduledRail) {
-          void fetchSnapshot("live_ws" as "polling");
+        if (staleSync || hasScheduledRail || mapRef.current.size === 0) {
+          void fetchSnapshot("live_ws");
         }
       }
     }, 30_000);
 
     const onVisibility = () => {
       if (closed || document.hidden) return;
+      const staleSync = Date.now() - lastUpdateMsRef.current > 20_000;
       if (agencyId === "all" || !ws || ws.readyState !== WebSocket.OPEN) {
         void fetchSnapshot("polling");
       } else {
@@ -267,6 +303,9 @@ export function useLiveAgency(agencyId: string, routeFilter?: string): LiveState
           );
         } catch {
           // ignore
+        }
+        if (staleSync || mapRef.current.size === 0) {
+          void fetchSnapshot("live_ws");
         }
       }
     };
