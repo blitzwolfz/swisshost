@@ -1,14 +1,20 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, History as HistoryIcon, Star } from "lucide-react";
+import { History as HistoryIcon, Star } from "lucide-react";
 import { TransitMap } from "../components/TransitMap";
+import { RouteBadge } from "../components/Transit";
+import { useLiveAgency } from "../hooks/useLiveAgency";
+import { agencyName, agencyShortName } from "../lib/agencies";
+import { useRouteLookup } from "../lib/routeColors";
 import {
   apiJson,
+  formatClock,
   formatCompass,
   formatDelay,
   formatRelativeAge,
   formatSpeed,
+  formatVehicleStatusLine,
   type LiveVehicle,
 } from "../lib/api";
 import { usePreferences } from "../lib/preferences";
@@ -33,7 +39,11 @@ export function VehiclesPage() {
   const { agencyId, units } = usePreferences();
   const effectiveAgency = agencyId === "all" ? "guelph" : agencyId;
   const [q, setQ] = useState("");
+  const [routeFilter, setRouteFilter] = useState("");
+  const [reporting, setReporting] = useState<"all" | "live" | "off">("all");
   const [sortBy, setSortBy] = useState<"last_seen" | "fleet" | "route">("last_seen");
+  const routes = useRouteLookup(effectiveAgency);
+  const live = useLiveAgency(effectiveAgency);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["fleet", effectiveAgency, q],
@@ -44,116 +54,180 @@ export function VehiclesPage() {
     staleTime: 20_000,
   });
 
-  const sorted = [...(data?.vehicles ?? [])].sort((a, b) => {
-    if (sortBy === "fleet") return a.fleet_number.localeCompare(b.fleet_number, undefined, { numeric: true });
-    if (sortBy === "route") return (a.route_id ?? "zzz").localeCompare(b.route_id ?? "zzz", undefined, { numeric: true });
-    return Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at);
-  });
+  const liveById = useMemo(() => {
+    const m = new Map<string, LiveVehicle>();
+    for (const v of live.vehicles) m.set(v.vehicleId, v);
+    return m;
+  }, [live.vehicles]);
+
+  const isLive = (row: FleetRow) => {
+    const lv = liveById.get(row.vehicle_id);
+    return Boolean(lv && lv.freshness !== "stale");
+  };
+
+  const rows = [...(data?.vehicles ?? [])]
+    .filter((v) => !routeFilter || (liveById.get(v.vehicle_id)?.routeId ?? v.route_id) === routeFilter)
+    .filter((v) => (reporting === "live" ? isLive(v) : reporting === "off" ? !isLive(v) : true))
+    .sort((a, b) => {
+      if (sortBy === "fleet") return a.fleet_number.localeCompare(b.fleet_number, undefined, { numeric: true });
+      if (sortBy === "route")
+        return (a.route_id ?? "zzz").localeCompare(b.route_id ?? "zzz", undefined, { numeric: true });
+      return Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at);
+    });
+
+  const sortButton = (key: typeof sortBy, label: string) => (
+    <button type="button" onClick={() => setSortBy(key)} aria-pressed={sortBy === key}>
+      {label}
+      {sortBy === key ? <span aria-hidden="true">{" \u2193"}</span> : null}
+      {sortBy === key ? <span className="sr-only"> (sorted)</span> : null}
+    </button>
+  );
 
   return (
     <div className="sh-page">
       <div className="sh-page-head">
         <div>
-          <div className="sh-kicker">
-            {effectiveAgency.toUpperCase()} Fleet Registry
-          </div>
-          <h1 className="sh-title">Vehicles</h1>
-          <p className="text-xs m-0 mt-1 tabular-nums" style={{ color: "var(--text-muted)" }}>
-            {data?.total ?? 0} observed vehicles recorded · Unknown manufacturer/model attributes remain honestly labeled unknown.
+          <h1 className="sh-title">{agencyName(effectiveAgency)} fleet</h1>
+          <p className="sh-lede tabular-nums">
+            {data?.total ?? 0} {data?.total === 1 ? "vehicle" : "vehicles"} seen. Make and model are shown only where they are known.
           </p>
         </div>
-        <input
-          type="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search fleet #, route, model…"
-          aria-label="Search fleet"
-          className="sh-input w-64"
-        />
       </div>
 
-      {isLoading && <p className="text-sm" style={{ color: "var(--text-muted)" }}>Loading fleet…</p>}
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label htmlFor="fleet-search" className="sh-label">
+            Fleet number
+          </label>
+          <input
+            id="fleet-search"
+            type="search"
+            inputMode="numeric"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="For example, 3000"
+            className="sh-input w-44"
+          />
+        </div>
+        <div>
+          <label htmlFor="fleet-route" className="sh-label">
+            Route
+          </label>
+          <select
+            id="fleet-route"
+            value={routeFilter}
+            onChange={(e) => setRouteFilter(e.target.value)}
+            className="sh-input w-56"
+          >
+            <option value="">All routes</option>
+            {routes.routes.map((r) => (
+              <option key={r.routeId} value={r.routeId}>
+                {r.shortName}
+                {r.longName ? `, ${r.longName}` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div role="group" aria-label="Reporting status" className="sh-seg">
+          {(
+            [
+              ["all", "All"],
+              ["live", "Live"],
+              ["off", "Not reporting"],
+            ] as const
+          ).map(([key, label]) => (
+            <button key={key} type="button" aria-pressed={reporting === key} onClick={() => setReporting(key)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <p className="sh-legend" style={{ marginTop: "0.75rem" }}>
+        <b>Bold</b> means the vehicle is reporting now. <i>Italic</i> means the last time it was seen.
+      </p>
+
+      {isLoading && <p className="text-sm sh-muted">Loading fleet…</p>}
       {error && <p className="text-sm" style={{ color: "var(--status-err)" }}>{(error as Error).message}</p>}
 
-      <div className="sh-table-wrap">
+      <div className="sh-table-wrap" style={{ marginTop: "0.5rem" }}>
         <table className="sh-table">
           <thead>
             <tr>
-              <th>
-                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("fleet")}>
-                  Fleet # {sortBy === "fleet" ? "▾" : ""}
-                </button>
-              </th>
-              <th>
-                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("route")}>
-                  Route {sortBy === "route" ? "▾" : ""}
-                </button>
-              </th>
-              <th>Trip</th>
-              <th>Speed</th>
-              <th>Deviation</th>
-              <th>Equipment</th>
-              <th>
-                <button type="button" className="bg-transparent border-0 font-bold text-inherit cursor-pointer p-0" onClick={() => setSortBy("last_seen")}>
-                  Last Seen {sortBy === "last_seen" ? "▾" : ""}
-                </button>
-              </th>
+              <th scope="col">{sortButton("fleet", "Fleet")}</th>
+              <th scope="col">{sortButton("route", "Route")}</th>
+              <th scope="col">Going to</th>
+              <th scope="col">Next stop</th>
+              <th scope="col">{sortButton("last_seen", "Status")}</th>
+              <th scope="col">Speed</th>
+              <th scope="col">Schedule</th>
+              <th scope="col">Equipment</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.length === 0 ? (
+            {rows.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center" style={{ color: "var(--text-muted)" }}>
-                  No vehicles observed yet for {effectiveAgency.toUpperCase()}.
+                <td colSpan={8} className="py-6 sh-muted">
+                  {(data?.vehicles.length ?? 0) === 0
+                    ? q
+                      ? `No ${agencyName(effectiveAgency)} vehicle matches \u201c${q}\u201d. Check the number on the front or side of the vehicle.`
+                      : `No ${agencyName(effectiveAgency)} vehicles have been seen yet. They appear here once the live feed reports them.`
+                    : reporting === "live"
+                      ? "None of these vehicles are reporting right now. Choose All to see when each was last seen."
+                      : "No vehicles match these filters. Choose All routes or All to widen the list."}
                 </td>
               </tr>
             ) : (
-              sorted.map((v) => {
-                const d = formatDelay(v.schedule_deviation_sec);
+              rows.map((v) => {
+                const lv = liveById.get(v.vehicle_id);
+                const reportingNow = isLive(v);
+                const routeId = lv?.routeId ?? v.route_id;
+                const d = formatDelay(lv?.scheduleDeviationSec ?? v.schedule_deviation_sec);
                 return (
                   <tr key={v.vehicle_id}>
-                    <td className="font-bold tabular-nums">
-                      <Link
-                        to={`/vehicles/${effectiveAgency}/${encodeURIComponent(v.vehicle_id)}`}
-                        className="inline-flex items-center gap-1"
-                      >
-                        #{v.fleet_number} <ArrowUpRight size={12} />
+                    <td>
+                      <Link className="sh-fleet" to={`/vehicles/${effectiveAgency}/${encodeURIComponent(v.vehicle_id)}`}>
+                        {v.fleet_number}
                       </Link>
                     </td>
-                    <td>
-                      {v.route_id ? (
+                    <td className="whitespace-nowrap">
+                      {routeId ? (
                         <Link
-                          to={`/routes/${effectiveAgency}/${encodeURIComponent(v.route_id)}`}
-                          className="no-underline hover:no-underline"
+                          to={`/routes/${effectiveAgency}/${encodeURIComponent(routeId)}`}
+                          className="inline-flex items-center gap-2.5"
+                          style={{ color: "var(--ink)" }}
                         >
-                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
-                            {v.route_id}
-                          </span>
+                          <RouteBadge
+                            label={lv?.routeShortName ?? routes.shortName(routeId)}
+                            color={routes.color(routeId, lv?.routeColor)}
+                          />
+                          <span>{lv?.routeLongName ?? routes.longName(routeId)}</span>
                         </Link>
                       ) : (
-                        <span className="sh-pill sh-pill-muted">Unassigned</span>
+                        <span className="sh-muted">Not on a route</span>
                       )}
                     </td>
-                    <td className="font-mono text-xs">
-                      {v.trip_id ? (
-                        <Link to={`/trips/${effectiveAgency}/${encodeURIComponent(v.trip_id)}`}>{v.trip_id}</Link>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="tabular-nums">{formatSpeed(v.speed_mps, units)}</td>
+                    <td>{lv?.headsign ?? <span className="sh-muted">Unknown</span>}</td>
                     <td>
-                      <span className={`sh-pill sh-pill-${d.tone}`}>{d.text}</span>
+                      {reportingNow && lv?.stopName ? lv.stopName : <span className="sh-muted">None</span>}
                     </td>
-                    <td className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    <td className="whitespace-nowrap">
+                      {reportingNow ? (
+                        <span className="sh-live">Live</span>
+                      ) : (
+                        <span className="sh-sched">Last seen {formatClock(v.last_seen_at)}</span>
+                      )}
+                    </td>
+                    <td className="tabular-nums whitespace-nowrap">{formatSpeed(lv?.speedMps ?? v.speed_mps, units)}</td>
+                    <td className="whitespace-nowrap" style={d.tone === "err" ? { color: "var(--danger)", fontWeight: 700 } : undefined}>
+                      {d.text}
+                    </td>
+                    <td className="sh-muted">
                       {v.manufacturer || v.model
                         ? `${v.year ?? ""} ${v.manufacturer ?? ""} ${v.model ?? ""}`.trim()
                         : v.vehicle_type !== "unknown"
                           ? v.vehicle_type
                           : "Unknown"}
-                    </td>
-                    <td className="text-xs tabular-nums" style={{ color: "var(--text-muted)" }}>
-                      {formatRelativeAge(v.last_seen_at)}
                     </td>
                   </tr>
                 );
@@ -169,6 +243,7 @@ export function VehiclesPage() {
 export function VehicleDetailPage() {
   const { agencyId = "guelph", vehicleId = "" } = useParams();
   const { units, isFavorite, toggleFavorite } = usePreferences();
+  const routes = useRouteLookup(agencyId);
   const [tab, setTab] = useState<"overview" | "assignments" | "fleet">("overview");
 
   const { data, isLoading, error } = useQuery({
@@ -199,7 +274,7 @@ export function VehicleDetailPage() {
   if (error || !data) {
     return (
       <div className="sh-page text-sm" style={{ color: "var(--status-err)" }}>
-        {(error as Error)?.message ?? "Vehicle not found"}
+        {(error as Error)?.message ?? "This vehicle could not be found. Check the fleet number and try again."}
       </div>
     );
   }
@@ -250,71 +325,66 @@ export function VehicleDetailPage() {
 
   return (
     <div className="sh-page">
-      <div className="sh-page-head">
+      <nav aria-label="Breadcrumb" className="sh-kicker">
+        <Link to="/vehicles">Vehicles</Link>
+      </nav>
+      <div className="sh-page-head" style={{ marginTop: "0.25rem" }}>
         <div className="space-y-1">
-          <div className="sh-kicker">
-            <Link to="/vehicles">Vehicles</Link> / {agencyId}
-          </div>
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-3">
             {l?.route_id ? (
-              <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} className="no-underline">
-                <span className="sh-route-shield text-white text-sm px-2.5 py-1" style={{ backgroundColor: "#E2001A" }}>
-                  Route {String(l.route_id)}
-                </span>
+              <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} aria-label={`Route ${String(l.route_short_name ?? l.route_id)}`}>
+                <RouteBadge
+                  size="lg"
+                  label={String(l.route_short_name ?? routes.shortName(String(l.route_id)))}
+                  color={routes.color(String(l.route_id))}
+                />
               </Link>
             ) : null}
-            <h1 className="sh-title tabular-nums">Vehicle #{fleetNum}</h1>
-            <span className={`sh-pill sh-pill-${delayInfo.tone}`}>{delayInfo.text}</span>
+            <h1 className="sh-title">
+              {agencyShortName(agencyId)} <span className="sh-narrow">{fleetNum}</span>
+            </h1>
           </div>
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            Internal ID <code>{vehicleId}</code> · Provenance: {String(v.metadata_source ?? "observed")}
-          </div>
+          <p className="sh-lede">
+            <b style={{ color: delayInfo.tone === "err" ? "var(--danger)" : "var(--ink)" }}>{delayInfo.text}</b>. Internal
+            ID <code>{vehicleId}</code>. Details from {String(v.metadata_source ?? "observed")} data.
+          </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             className="sh-btn"
+            aria-pressed={fav}
             onClick={() =>
               toggleFavorite({
                 agencyId,
                 entityType: "vehicle",
                 entityId: vehicleId,
-                label: `${agencyId.toUpperCase()} #${fleetNum}`,
+                label: `${agencyShortName(agencyId)} ${fleetNum}`,
               })
             }
           >
-            <Star size={14} fill={fav ? "currentColor" : "none"} />
-            {fav ? "Favorited" : "Favorite"}
+            <Star size={18} aria-hidden="true" fill={fav ? "currentColor" : "none"} />
+            {fav ? "Saved" : "Save vehicle"}
           </button>
           <Link
             to={`/history?agency=${agencyId}&vehicle=${encodeURIComponent(vehicleId)}`}
             className="sh-btn sh-btn-primary"
           >
-            <HistoryIcon size={14} /> Replay History
+            <HistoryIcon size={18} aria-hidden="true" /> Replay history
           </Link>
         </div>
       </div>
 
-      {/* Text tabs */}
-      <div className="flex gap-1 border-b text-sm font-semibold" style={{ borderColor: "var(--border)" }}>
+      <div role="group" aria-label="Vehicle sections" className="sh-seg">
         {(
           [
             ["overview", "Overview"],
             ["assignments", `Assignments (${data.recentAssignments.length})`],
-            ["fleet", "Fleet Metadata"],
+            ["fleet", "Fleet details"],
           ] as const
         ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className="px-3.5 py-2 bg-transparent border-0 border-b-2 cursor-pointer transition-colors"
-            style={{
-              color: tab === key ? "var(--primary)" : "var(--text-muted)",
-              borderBottomColor: tab === key ? "var(--primary)" : "transparent",
-            }}
-          >
+          <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)}>
             {label}
           </button>
         ))}
@@ -336,27 +406,31 @@ export function VehicleDetailPage() {
             <table className="sh-table">
               <tbody>
                 <tr>
-                  <th className="w-52">Current Route</th>
+                  <th scope="row" className="w-52">Route</th>
                   <td>
                     {l?.route_id ? (
                       <div className="flex flex-wrap items-center gap-2">
                         <Link to={`/routes/${agencyId}/${encodeURIComponent(String(l.route_id))}`} className="font-semibold">
                           Route {String(l.route_short_name ?? l.route_id)}
-                          {l.route_long_name ? ` — ${String(l.route_long_name)}` : ""}
+                          {l.route_long_name ? `, ${String(l.route_long_name)}` : ""}
                         </Link>
-                        {l.headsign ? <span className="sh-pill sh-pill-muted">To {String(l.headsign)}</span> : null}
+                        {l.headsign ? <span className="sh-muted">going to {String(l.headsign)}</span> : null}
                       </div>
                     ) : (
-                      "Unassigned"
+                      "Not on a route"
                     )}
                   </td>
                 </tr>
                 <tr>
-                  <th>Current / Next Stop</th>
+                  <th scope="row">Stop</th>
                   <td>
                     {l?.stop_name ? (
                       <Link to={`/stops/${agencyId}/${encodeURIComponent(String(l.stop_id ?? ""))}`} className="font-semibold">
-                        {String(l.current_status ?? "IN_TRANSIT_TO").replace(/_/g, " ")}: {String(l.stop_name)}
+                        {formatVehicleStatusLine({
+                          currentStatus: (l.current_status as string | null) ?? null,
+                          stopName: String(l.stop_name),
+                          stopId: (l.stop_id as string | null) ?? null,
+                        })}
                       </Link>
                     ) : l?.current_status ? (
                       <span className="capitalize">{String(l.current_status).replace(/_/g, " ").toLowerCase()}</span>
@@ -366,8 +440,8 @@ export function VehicleDetailPage() {
                   </td>
                 </tr>
                 <tr>
-                  <th>Current Trip / Block</th>
-                  <td className="font-mono text-xs">
+                  <th scope="row">Trip and block</th>
+                  <td>
                     {l?.trip_id ? (
                       <Link to={`/trips/${agencyId}/${encodeURIComponent(String(l.trip_id))}`}>
                         {String(l.trip_id)}
@@ -377,7 +451,7 @@ export function VehicleDetailPage() {
                     )}
                     {l?.block_id ? (
                       <>
-                        {" · Block "}
+                        {", block "}
                         <Link to={`/blocks/${agencyId}/${encodeURIComponent(String(l.block_id))}`}>
                           {String(l.block_id)}
                         </Link>
@@ -386,25 +460,25 @@ export function VehicleDetailPage() {
                   </td>
                 </tr>
                 <tr>
-                  <th>Raw GPS / Heading / Speed</th>
+                  <th scope="row">Position, heading, speed</th>
                   <td className="tabular-nums">
                     {l
-                      ? `${Number(l.lat).toFixed(5)}, ${Number(l.lon).toFixed(5)} · ${
+                      ? `${Number(l.lat).toFixed(5)}, ${Number(l.lon).toFixed(5)}; ${
                           l.bearing_deg !== null
                             ? `${Math.round(Number(l.bearing_deg))}° ${formatCompass(Number(l.bearing_deg))}`
                             : "Unknown heading"
-                        } · ${formatSpeed(l.speed_mps !== null ? Number(l.speed_mps) : null, units)}`
+                        }; ${formatSpeed(l.speed_mps !== null ? Number(l.speed_mps) : null, units)}`
                       : "No recent GPS"}
                   </td>
                 </tr>
                 <tr>
-                  <th>Last Observation</th>
-                  <td className="tabular-nums text-xs">
+                  <th scope="row">Last report</th>
+                  <td className="tabular-nums">
                     {l ? (
                       <>
                         {new Date(String(l.observed_at ?? l.received_at)).toLocaleString()} (
-                        {formatRelativeAge(String(l.observed_at ?? l.received_at))}) · Basis:{" "}
-                        <span className="sh-pill sh-pill-muted">{String(l.timestamp_basis ?? "receipt")}</span>
+                        {formatRelativeAge(String(l.observed_at ?? l.received_at))}). Time source:{" "}
+                        {String(l.timestamp_basis ?? "receipt")}
                       </>
                     ) : (
                       "Unknown"
@@ -412,9 +486,9 @@ export function VehicleDetailPage() {
                   </td>
                 </tr>
                 <tr>
-                  <th>Match Method</th>
-                  <td className="text-xs">
-                    {l ? `${String(l.match_method)} (${Math.round(Number(l.match_confidence ?? 0) * 100)}% confidence)` : "—"}
+                  <th scope="row">Trip matching</th>
+                  <td>
+                    {l ? `${String(l.match_method)}, ${Math.round(Number(l.match_confidence ?? 0) * 100)}% confidence` : "Unknown"}
                   </td>
                 </tr>
               </tbody>
@@ -428,19 +502,19 @@ export function VehicleDetailPage() {
           <table className="sh-table">
             <thead>
               <tr>
-                <th>Service Date</th>
+                <th>Service day</th>
                 <th>Route</th>
                 <th>Trip</th>
-                <th>Observed Window</th>
-                <th>Samples</th>
-                <th>Method</th>
+                <th>Seen between</th>
+                <th>Reports</th>
+                <th>Matched by</th>
               </tr>
             </thead>
             <tbody>
               {data.recentAssignments.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ color: "var(--text-muted)" }}>
-                    No assignment intervals recorded yet.
+                  <td colSpan={6} className="sh-muted">
+                    No route assignments recorded for this vehicle yet. They appear after it runs a matched trip.
                   </td>
                 </tr>
               ) : (
@@ -449,27 +523,25 @@ export function VehicleDetailPage() {
                     <td className="tabular-nums">{a.service_date}</td>
                     <td>
                       {a.route_id ? (
-                        <Link to={`/routes/${agencyId}/${encodeURIComponent(a.route_id)}`}>
-                          <span className="sh-route-shield text-white" style={{ backgroundColor: "#E2001A" }}>
-                            {a.route_id}
-                          </span>
+                        <Link to={`/routes/${agencyId}/${encodeURIComponent(a.route_id)}`} aria-label={`Route ${routes.shortName(a.route_id)}`}>
+                          <RouteBadge label={routes.shortName(a.route_id)} color={routes.color(a.route_id)} />
                         </Link>
                       ) : (
-                        "—"
+                        <span className="sh-muted">None</span>
                       )}
                     </td>
-                    <td className="font-mono text-xs">
+                    <td>
                       {a.trip_id ? (
                         <Link to={`/trips/${agencyId}/${encodeURIComponent(a.trip_id)}`}>{a.trip_id}</Link>
                       ) : (
-                        "—"
+                        <span className="sh-muted">None</span>
                       )}
                     </td>
-                    <td className="text-xs tabular-nums">
-                      {new Date(a.started_at).toLocaleTimeString()} – {new Date(a.ended_at).toLocaleTimeString()}
+                    <td className="tabular-nums">
+                      {formatClock(a.started_at)} to {formatClock(a.ended_at)}
                     </td>
                     <td className="tabular-nums">{a.observation_count}</td>
-                    <td><span className="sh-pill sh-pill-muted">{a.method}</span></td>
+                    <td>{a.method}</td>
                   </tr>
                 ))
               )}
@@ -482,15 +554,15 @@ export function VehicleDetailPage() {
         <div className="sh-table-wrap">
           <table className="sh-table">
             <tbody>
-              <tr><th className="w-52">Vehicle Type</th><td>{String(v.vehicle_type ?? "Unknown")}</td></tr>
-              <tr><th>Manufacturer</th><td>{String(v.manufacturer ?? "Unknown")}</td></tr>
-              <tr><th>Model</th><td>{String(v.model ?? "Unknown")}</td></tr>
-              <tr><th>Model Year</th><td>{v.year ? String(v.year) : "Unknown"}</td></tr>
-              <tr><th>Propulsion</th><td>{String(v.propulsion ?? "Unknown")}</td></tr>
-              <tr><th>Accessibility</th><td>{String(v.accessibility ?? "Unknown")}</td></tr>
-              <tr><th>Garage / Division</th><td>{String(v.garage ?? "Unknown")}</td></tr>
-              <tr><th>First / Last Seen</th><td className="tabular-nums text-xs">{String(v.first_seen_at ?? "—")} / {String(v.last_seen_at ?? "—")}</td></tr>
-              <tr><th>Metadata Provenance</th><td><span className="sh-pill sh-pill-muted">{String(v.metadata_source ?? "observed")}</span></td></tr>
+              <tr><th scope="row" className="w-52">Vehicle type</th><td>{String(v.vehicle_type ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Manufacturer</th><td>{String(v.manufacturer ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Model</th><td>{String(v.model ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Model year</th><td>{v.year ? String(v.year) : "Unknown"}</td></tr>
+              <tr><th scope="row">Propulsion</th><td>{String(v.propulsion ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Accessibility</th><td>{String(v.accessibility ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Garage</th><td>{String(v.garage ?? "Unknown")}</td></tr>
+              <tr><th scope="row">First and last seen</th><td className="tabular-nums">{String(v.first_seen_at ?? "Unknown")} to {String(v.last_seen_at ?? "Unknown")}</td></tr>
+              <tr><th scope="row">Source of these details</th><td>{String(v.metadata_source ?? "observed")}</td></tr>
             </tbody>
           </table>
         </div>
