@@ -73,7 +73,7 @@ export default function LiveMapPage() {
   const [fleetFilter, setFleetFilter] = useState("");
   const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh" | "stale">("all");
   const [assignedFilter, setAssignedFilter] = useState<"all" | "assigned" | "unassigned">("all");
-  const [labelMode, setLabelMode] = useState<MapLabelMode>("both");
+  const [labelMode, setLabelMode] = useState<MapLabelMode>("line");
   const [showFilters, setShowFilters] = useState(false);
   const [followSelected, setFollowSelected] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -129,7 +129,13 @@ export default function LiveMapPage() {
   const zoom = activeAgency?.defaultZoom ?? (agencyId === "all" ? 9.5 : 12);
 
   const filteredVehicles = useMemo(() => {
-    const list = live.vehicles.filter((v) => {
+    const resolved = live.vehicles.map((v) => {
+      if (!v.routeId || v.routeShortName) return v;
+      const sn = routes.shortName(v.routeId);
+      const ln = routes.longName(v.routeId);
+      return sn ? { ...v, routeShortName: sn, routeLongName: v.routeLongName ?? (ln || null) } : v;
+    });
+    const list = resolved.filter((v) => {
       if (fleetFilter) {
         const q = fleetFilter.toLowerCase();
         if (
@@ -161,7 +167,7 @@ export default function LiveMapPage() {
       if (routeCmp !== 0) return routeCmp;
       return a.fleetNumber.localeCompare(b.fleetNumber, undefined, { numeric: true });
     });
-  }, [live.vehicles, fleetFilter, freshnessFilter, assignedFilter]);
+  }, [live.vehicles, routes, fleetFilter, freshnessFilter, assignedFilter]);
 
   const activeFilterCount =
     (fleetFilter ? 1 : 0) + (freshnessFilter !== "all" ? 1 : 0) + (assignedFilter !== "all" ? 1 : 0);
@@ -463,9 +469,9 @@ export default function LiveMapPage() {
           onChange={(e) => setLabelMode(e.target.value as MapLabelMode)}
           className="sh-input"
         >
-          <option value="both">Bus # + route</option>
-          <option value="fleet">Bus # only</option>
-          <option value="off">Bus icons only</option>
+          <option value="line">Line number</option>
+          <option value="line+fleet">Line + bus #</option>
+          <option value="icons">Bus icons only</option>
         </select>
       </div>
       <button
@@ -847,9 +853,9 @@ export default function LiveMapPage() {
       <div role="group" aria-label="Map bus labels" className="sh-seg bg-[var(--paper)]">
         {(
           [
-            ["both", "# + Rt"],
-            ["fleet", "Bus #"],
-            ["off", "Icons"],
+            ["line", "Line"],
+            ["line+fleet", "Line + #"],
+            ["icons", "Icons"],
           ] as const
         ).map(([m, text]) => (
           <button

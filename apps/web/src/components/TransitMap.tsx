@@ -4,7 +4,7 @@ import { formatClock, formatCompass, formatSpeed, formatVehicleStatusLine, type 
 import { usePreferences } from "../lib/preferences";
 import { routeColor } from "../lib/routeColors";
 
-export type MapLabelMode = "fleet" | "both" | "off";
+export type MapLabelMode = "line" | "line+fleet" | "icons";
 
 interface TransitMapProps {
   center: [number, number];
@@ -21,7 +21,7 @@ interface TransitMapProps {
   selectedStopId?: string | null;
   onSelectStop?: (stop: { stop_id: string; name: string }) => void;
   followSelected?: boolean;
-  /** How vehicles are labelled next to their bus icons on the map. */
+  /** How vehicles are labelled on the map: line number (default), line + fleet #, or bus icons only. */
   labelMode?: MapLabelMode;
   /** Pixels hidden by an overlay at the bottom (e.g. a sheet); centring accounts for it. */
   bottomInset?: number;
@@ -31,6 +31,8 @@ interface TransitMapProps {
 
 /** One basemap (OpenFreeMap positron), recoloured per theme into a printed-map look. */
 const BASE_STYLE = "https://tiles.openfreemap.org/styles/positron";
+const MARKER_FONT = '700 15px "Archivo Narrow", "Arial Narrow", sans-serif';
+const MARKER_FONT_SEL = '700 17px "Archivo Narrow", "Arial Narrow", sans-serif';
 
 interface MapTheme {
   bg: string;
@@ -124,109 +126,167 @@ function restyleBasemap(map: maplibregl.Map, t: MapTheme) {
   }
 }
 
-/**
- * Crisp HiDPI bus marker (route-coloured circular transit puck with a clear white
- * bus glyph inside). Drawn at 2x for retina screens.
- */
-function drawBusMarker(color: string, selected: boolean, assigned: boolean, t: MapTheme): ImageData {
-  const scale = 2;
-  const r = selected ? 15 : assigned ? 12 : 10;
-  const ring = selected ? 3.5 : 2;
-  const size = Math.ceil((r + ring + 1) * 2);
-  const cx = size / 2;
-  const cy = size / 2;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = size * scale;
-  canvas.height = size * scale;
-  const ctx = canvas.getContext("2d")!;
-  ctx.scale(scale, scale);
-
-  // High-contrast outer ring separates the bus from route lines and map roads
-  ctx.beginPath();
-  ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
-  ctx.fillStyle = selected ? t.ink : t.paper;
-  ctx.fill();
-
-  if (selected) {
-    // Inner paper halo inside ink ring for extra crisp selection focus
-    ctx.beginPath();
-    ctx.arc(cx, cy, r + 1.5, 0, Math.PI * 2);
-    ctx.fillStyle = t.paper;
-    ctx.fill();
-  }
-
-  // Main route-coloured body
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
-
-  // Crisp front-view bus icon inside the marker
-  const s = selected ? 1.15 : assigned ? 0.96 : 0.82;
+/** Draw the white front-view bus silhouette centered at (cx, cy) with scale s. */
+function drawBusGlyph(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number, cutoutColor: string) {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(s, s);
 
-  // Bus chassis
+  // Bus body
   ctx.fillStyle = "#FFFFFF";
   ctx.beginPath();
-  ctx.roundRect(-6.2, -6.8, 12.4, 11.4, 2.2);
+  ctx.roundRect(-6, -6.5, 12, 11, 2);
   ctx.fill();
 
-  // Windshield cutout (tinted with bus body colour)
-  ctx.fillStyle = color;
+  // Windshield
+  ctx.fillStyle = cutoutColor;
   ctx.beginPath();
-  ctx.roundRect(-4.6, -4.8, 9.2, 4.6, 1);
+  ctx.roundRect(-4.4, -4.6, 8.8, 4.4, 0.9);
   ctx.fill();
 
-  // Destination strip above windshield
-  ctx.fillStyle = color;
-  ctx.fillRect(-3.2, -6.1, 6.4, 0.8);
+  // Destination strip
+  ctx.fillStyle = cutoutColor;
+  ctx.fillRect(-3, -5.8, 6, 0.75);
 
-  // Headlights (subtle dark dots or bright dots on white chassis)
-  ctx.fillStyle = color;
+  // Headlights
+  ctx.fillStyle = cutoutColor;
   ctx.beginPath();
-  ctx.arc(-3.6, 2.2, 1.1, 0, Math.PI * 2);
-  ctx.arc(3.6, 2.2, 1.1, 0, Math.PI * 2);
+  ctx.arc(-3.4, 2.1, 1.05, 0, Math.PI * 2);
+  ctx.arc(3.4, 2.1, 1.05, 0, Math.PI * 2);
   ctx.fill();
 
-  // Wheels underneath chassis
+  // Wheels
   ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(-5.2, 4.3, 2.6, 2.1);
-  ctx.fillRect(2.6, 4.3, 2.6, 2.1);
+  ctx.fillRect(-5, 4.2, 2.5, 2);
+  ctx.fillRect(2.5, 4.2, 2.5, 2);
 
   ctx.restore();
-  return ctx.getImageData(0, 0, size * scale, size * scale);
 }
 
-/** Directional heading pointer orbiting the bus marker to show direction of travel. */
-function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
+/**
+ * Crisp HiDPI bus marker:
+ * - When `lineLabel` is non-empty (default for in-service buses): route-coloured pill
+ *   containing the bus icon + bold line number (e.g. [bus 1], [bus 2], [bus 99], [bus 504]).
+ * - When `lineLabel` is empty (unassigned buses or icon-only mode): compact circular bus puck.
+ */
+function drawBusMarker(color: string, lineLabel: string, selected: boolean, t: MapTheme): ImageData {
   const scale = 2;
-  const w = selected ? 18 : 14;
-  const h = selected ? 12 : 10;
+  const ring = selected ? 3 : 1.75;
+
+  if (!lineLabel) {
+    const r = selected ? 14 : 11;
+    const size = Math.ceil((r + ring + 1) * 2);
+    const cx = size / 2;
+    const cy = size / 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = size * scale;
+    canvas.height = size * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(scale, scale);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
+    ctx.fillStyle = selected ? t.ink : t.paper;
+    ctx.fill();
+
+    if (selected) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 1.2, 0, Math.PI * 2);
+      ctx.fillStyle = t.paper;
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    drawBusGlyph(ctx, cx, cy, selected ? 1.05 : 0.85, color);
+    return ctx.getImageData(0, 0, size * scale, size * scale);
+  }
+
+  const font = selected ? MARKER_FONT_SEL : MARKER_FONT;
+  const ctx0 = document.createElement("canvas").getContext("2d")!;
+  ctx0.font = font;
+  const textW = ctx0.measureText(lineLabel).width;
+
+  const innerH = selected ? 26 : 22;
+  const iconSlotW = selected ? 18 : 15;
+  const gap = 3;
+  const padL = selected ? 6 : 5;
+  const padR = selected ? 7 : 6;
+  const innerW = Math.ceil(padL + iconSlotW + gap + Math.max(12, textW) + padR);
+  const w = Math.ceil(innerW + ring * 2);
+  const h = Math.ceil(innerH + ring * 2);
+  const outerRadius = h / 2;
+  const innerRadius = innerH / 2;
+
   const canvas = document.createElement("canvas");
   canvas.width = w * scale;
   canvas.height = h * scale;
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
 
-  // Outer outline triangle
+  // Outer contrast border separates the bus badge from route lines and streets
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, h, outerRadius);
+  ctx.fillStyle = selected ? t.ink : t.paper;
+  ctx.fill();
+
+  if (selected) {
+    ctx.beginPath();
+    ctx.roundRect(1.5, 1.5, w - 3, h - 3, outerRadius - 1.5);
+    ctx.fillStyle = t.paper;
+    ctx.fill();
+  }
+
+  // Route-coloured body
+  ctx.beginPath();
+  ctx.roundRect(ring, ring, innerW, innerH, innerRadius);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  // Bus icon on the left
+  const iconCx = ring + padL + iconSlotW / 2;
+  const iconCy = h / 2;
+  drawBusGlyph(ctx, iconCx, iconCy, selected ? 0.92 : 0.8, color);
+
+  // Bold line number on the right (1, 2, 99, 504, LW, etc.)
+  const textX = ring + padL + iconSlotW + gap + Math.max(12, textW) / 2;
+  ctx.fillStyle = "#FFFFFF";
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(lineLabel, textX, h / 2 + 0.75);
+
+  return ctx.getImageData(0, 0, w * scale, h * scale);
+}
+
+/** Directional heading pointer orbiting the bus marker to show direction of travel. */
+function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
+  const scale = 2;
+  const w = selected ? 16 : 13;
+  const h = selected ? 11 : 9;
+  const canvas = document.createElement("canvas");
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(scale, scale);
+
   ctx.beginPath();
   ctx.moveTo(w / 2, 0);
   ctx.lineTo(w, h);
-  ctx.lineTo(w / 2, h - 2.4);
+  ctx.lineTo(w / 2, h - 2.2);
   ctx.lineTo(0, h);
   ctx.closePath();
   ctx.fillStyle = selected ? t.ink : t.paper;
   ctx.fill();
 
-  // Inner filled arrow in route/ink colour
   ctx.beginPath();
-  ctx.moveTo(w / 2, 2.2);
-  ctx.lineTo(w - 2.4, h - 1.4);
-  ctx.lineTo(w / 2, h - 3.6);
-  ctx.lineTo(2.4, h - 1.4);
+  ctx.moveTo(w / 2, 2);
+  ctx.lineTo(w - 2.2, h - 1.3);
+  ctx.lineTo(w / 2, h - 3.2);
+  ctx.lineTo(2.2, h - 1.3);
   ctx.closePath();
   ctx.fillStyle = selected ? t.ink : color;
   ctx.fill();
@@ -234,12 +294,10 @@ function drawHeading(color: string, selected: boolean, t: MapTheme): ImageData {
   return ctx.getImageData(0, 0, w * scale, h * scale);
 }
 
-function busLabelText(v: LiveVehicle, mode: MapLabelMode): string {
-  if (mode === "off") return "";
-  const fleet = v.fleetNumber || v.vehicleId;
-  const route = v.routeShortName ?? v.routeId;
-  if (mode === "fleet") return `#${fleet}`;
-  return route ? `#${fleet} · ${route}` : `#${fleet}`;
+function lineNumberOf(v: LiveVehicle): string {
+  const raw = (v.routeShortName ?? v.routeId ?? "").trim();
+  if (!raw) return "";
+  return raw.length > 5 ? raw.slice(0, 5) : raw;
 }
 
 function escapeHtml(text: string): string {
@@ -266,7 +324,7 @@ export function TransitMap({
   selectedStopId = null,
   onSelectStop,
   followSelected = false,
-  labelMode = "both",
+  labelMode = "line",
   bottomInset = 0,
   heightClass = "h-[65vh] min-h-[420px]",
   rounded = true,
@@ -304,8 +362,10 @@ export function TransitMap({
       const color = routeColor(v.agencyId, v.routeId, v.routeColor);
       const stale = v.freshness === "stale";
       const pos = positions?.get(keyOf(v)) ?? [v.lon, v.lat];
-      const label = busLabelText(v, labelModeRef.current);
-      const selectedLabel = busLabelText(v, "both");
+      const lineNum = labelModeRef.current === "icons" ? "" : lineNumberOf(v);
+      const fleetSubLabel =
+        labelModeRef.current === "line+fleet" ? `#${v.fleetNumber || v.vehicleId}` : "";
+      const selectedSubLabel = `#${v.fleetNumber || v.vehicleId}`;
       return {
         type: "Feature" as const,
         id: keyOf(v),
@@ -313,10 +373,10 @@ export function TransitMap({
         properties: {
           agencyId: v.agencyId,
           vehicleId: v.vehicleId,
-          icon: `bus|${color}|${selected ? 1 : 0}|${assigned ? 1 : 0}`,
+          icon: `bus|${color}|${selected ? 1 : 0}|${lineNum}`,
           headingIcon: `hdg|${color}|${selected ? 1 : 0}`,
-          label,
-          selectedLabel,
+          fleetSubLabel,
+          selectedSubLabel,
           bearing: hasBearing ? v.bearingDeg : 0,
           hasBearing,
           assigned,
@@ -354,13 +414,13 @@ export function TransitMap({
       "bottom-right"
     );
 
-    // Bus icons and heading pointers are generated on demand per colour + state
+    // Bus+line badges and heading arrows are generated on demand per colour + line + state
     map.on("styleimagemissing", (e) => {
       const id = e.id;
       if (map.hasImage(id)) return;
       if (id.startsWith("bus|")) {
-        const [, color, sel, assigned] = id.split("|");
-        map.addImage(id, drawBusMarker(color!, sel === "1", assigned === "1", t), { pixelRatio: 2 });
+        const [, color, sel, ...rest] = id.split("|");
+        map.addImage(id, drawBusMarker(color!, rest.join("|"), sel === "1", t), { pixelRatio: 2 });
       } else if (id.startsWith("hdg|")) {
         const [, color, sel] = id.split("|");
         map.addImage(id, drawHeading(color!, sel === "1", t), { pixelRatio: 2 });
@@ -474,10 +534,10 @@ export function TransitMap({
         0.42,
         ["boolean", ["get", "assigned"], true],
         1,
-        0.82,
+        0.72,
       ];
 
-      // Directional heading arrow attached to the front edge of each bus marker
+      // Directional heading arrow pointing in the bus's direction of travel
       map.addLayer({
         id: "vehicle-heading",
         type: "symbol",
@@ -487,14 +547,14 @@ export function TransitMap({
           "icon-image": ["get", "headingIcon"],
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
-          "icon-offset": ["case", ["boolean", ["get", "selected"], false], ["literal", [0, -22]], ["literal", [0, -17]]],
+          "icon-offset": ["case", ["boolean", ["get", "selected"], false], ["literal", [0, -23]], ["literal", [0, -19]]],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
         paint: { "icon-opacity": vehicleOpacity },
       });
 
-      // Bus icon puck
+      // Bus icon + line number pill
       map.addLayer({
         id: "vehicle-points",
         type: "symbol",
@@ -518,16 +578,16 @@ export function TransitMap({
         paint: { "icon-opacity": vehicleOpacity },
       });
 
-      // Collision-aware bus labels (shows #fleet or #fleet · route without overlapping into clutter)
+      // Optional fleet # sub-label (only populated when labelMode === "line+fleet")
       map.addLayer({
         id: "vehicle-labels",
         type: "symbol",
         source: "vehicles",
         filter: ["all", ["!", ["has", "point_count"]], ["!", ["boolean", ["get", "selected"], false]]],
-        minzoom: 11.5,
+        minzoom: 12,
         layout: {
-          "text-field": ["get", "label"],
-          "text-size": 11,
+          "text-field": ["get", "fleetSubLabel"],
+          "text-size": 10.5,
           "text-font": ["Noto Sans Bold"],
           "text-offset": [0, 1.55],
           "text-anchor": "top",
@@ -543,15 +603,15 @@ export function TransitMap({
         },
       });
 
-      // Always-visible label for the currently selected bus
+      // Always-visible fleet # sub-label under the selected bus
       map.addLayer({
         id: "vehicle-selected-label",
         type: "symbol",
         source: "vehicles",
         filter: ["all", ["!", ["has", "point_count"]], ["boolean", ["get", "selected"], false]],
         layout: {
-          "text-field": ["get", "selectedLabel"],
-          "text-size": 12,
+          "text-field": ["get", "selectedSubLabel"],
+          "text-size": 11.5,
           "text-font": ["Noto Sans Bold"],
           "text-offset": [0, 1.85],
           "text-anchor": "top",
@@ -600,7 +660,7 @@ export function TransitMap({
         if (found && onSelectRef.current) onSelectRef.current(found);
       });
 
-      // Lightweight desktop hover tooltip showing the exact bus & route info
+      // Lightweight desktop hover tooltip showing Line #, destination, and Bus #
       const hoverPopup = new maplibregl.Popup({
         closeButton: false,
         closeOnClick: false,
@@ -616,9 +676,15 @@ export function TransitMap({
         const ag = feat.properties?.agencyId as string | undefined;
         const found = vehiclesRef.current.find((v) => v.vehicleId === vid && (!ag || v.agencyId === ag));
         if (!found) return;
-        const routeLine = found.routeId
-          ? `Route ${escapeHtml(found.routeShortName ?? found.routeId)}${found.headsign ? ` · ${escapeHtml(found.headsign)}` : ""}`
-          : "Not on a route";
+        const line = lineNumberOf(found);
+        const title = line ? `Line ${escapeHtml(line)} · Bus #${escapeHtml(found.fleetNumber)}` : `Bus #${escapeHtml(found.fleetNumber)}`;
+        const subtitle = found.headsign
+          ? escapeHtml(found.headsign)
+          : found.routeLongName
+            ? escapeHtml(found.routeLongName)
+            : line
+              ? `Route ${escapeHtml(line)}`
+              : "Not on a line";
         const speedText = found.speedMps !== null ? formatSpeed(found.speedMps, unitsRef.current) : null;
         const compass = found.bearingDeg !== null ? formatCompass(found.bearingDeg) : "";
         const metaParts = [
@@ -630,8 +696,8 @@ export function TransitMap({
           .setLngLat(feat.geometry.coordinates as [number, number])
           .setHTML(
             `<div class="sh-popup-inner">` +
-              `<div class="sh-popup-title">Bus #${escapeHtml(found.fleetNumber)}</div>` +
-              `<div class="sh-popup-route">${routeLine}</div>` +
+              `<div class="sh-popup-title">${title}</div>` +
+              `<div class="sh-popup-route">${subtitle}</div>` +
               `<div class="sh-popup-meta">${escapeHtml(metaParts.join(" · "))}</div>` +
               `</div>`
           )
@@ -664,8 +730,14 @@ export function TransitMap({
       map.fire("sh:ready");
     };
 
+    const fontReady = Promise.race([
+      document.fonts?.load(MARKER_FONT).catch(() => undefined) ?? Promise.resolve(),
+      new Promise((r) => setTimeout(r, 1200)),
+    ]);
     map.on("load", () => {
-      if (mapRef.current === map) setupLayers();
+      void fontReady.then(() => {
+        if (mapRef.current === map) setupLayers();
+      });
     });
     mapRef.current = map;
 
