@@ -4,16 +4,30 @@ import type {
   LiveVehicleState,
   LiveWsClientMessage,
   LiveWsServerMessage,
+  NormalizedTripUpdate,
   Observation,
 } from "@swisshost/contracts";
+import { validateObservationQuality } from "@swisshost/transit-core";
 import type { Env } from "../../api/src/env";
 
 type StoredVehicleRow = {
   source_vehicle_id: string;
+  vehicle_id: string;
   payload_json: string;
   observed_ms: number;
   received_ms: number;
   route_id: string | null;
+  trip_id: string | null;
+};
+
+type StoredTripUpdateRow = {
+  trip_id: string;
+  service_date: string;
+  route_id: string | null;
+  vehicle_id: string | null;
+  delay_sec: number | null;
+  payload_json: string;
+  updated_ms: number;
 };
 
 interface WsAttachment {
@@ -34,10 +48,25 @@ export class AgencyLiveDO extends DurableObject<Env> {
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS live_vehicles (
           source_vehicle_id TEXT PRIMARY KEY,
+          vehicle_id TEXT NOT NULL DEFAULT '',
           route_id TEXT,
+          trip_id TEXT,
           observed_ms INTEGER NOT NULL,
           received_ms INTEGER NOT NULL,
           payload_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS known_vehicles (
+          vehicle_id TEXT PRIMARY KEY,
+          first_seen_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS live_trip_updates (
+          trip_id TEXT PRIMARY KEY,
+          service_date TEXT NOT NULL,
+          route_id TEXT,
+          vehicle_id TEXT,
+          delay_sec INTEGER,
+          payload_json TEXT NOT NULL,
+          updated_ms INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS live_meta (
           key TEXT PRIMARY KEY,
@@ -49,6 +78,18 @@ export class AgencyLiveDO extends DurableObject<Env> {
           payload_json TEXT NOT NULL
         );
       `);
+
+      // Forward-compatible column additions for DO instances created before this optimization
+      try {
+        this.ctx.storage.sql.exec("ALTER TABLE live_vehicles ADD COLUMN vehicle_id TEXT NOT NULL DEFAULT ''");
+      } catch {
+        // already exists
+      }
+      try {
+        this.ctx.storage.sql.exec("ALTER TABLE live_vehicles ADD COLUMN trip_id TEXT");
+      } catch {
+        // already exists
+      }
 
       const metaRows = this.ctx.storage.sql
         .exec<{ key: string; value: string }>("SELECT key, value FROM live_meta")
@@ -90,7 +131,17 @@ export class AgencyLiveDO extends DurableObject<Env> {
     staleAfterSeconds: number;
     feedTimestamp: string | null;
     receivedAt: string;
-  }): Promise<{ cursor: number; upserts: number; removed: number }> {
+  }): Promise<{
+    cursor: number;
+    upserts: number;
+    removed: number;
+    accepted: number;
+    rejected: number;
+    duplicates: number;
+    changedObservations: Observation[];
+    newVehicles: Observation[];
+    assignmentChanges: Observation[];
+  }> {
     this.agencyId = input.agencyId;
     this.staleAfterSeconds = input.staleAfterSeconds;
     this.feedStatus = "fresh";
@@ -103,70 +154,153 @@ export class AgencyLiveDO extends DurableObject<Env> {
     const nowMs = Date.now();
     const existingRows = this.ctx.storage.sql
       .exec<StoredVehicleRow>(
-        "SELECT source_vehicle_id, route_id, observed_ms, received_ms, payload_json FROM live_vehicles"
+        "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles"
       )
       .toArray();
-    const existingMap = new Map<string, StoredVehicleRow>();
+    const existingMap = new Map<string, { row: StoredVehicleRow; state: LiveVehicleState }>();
     for (const r of existingRows) {
-      existingMap.set(r.source_vehicle_id, r);
+      existingMap.set(r.source_vehicle_id, { row: r, state: JSON.parse(r.payload_json) as LiveVehicleState });
+    }
+
+    const knownSet = new Set(
+      this.ctx.storage.sql.exec<{ vehicle_id: string }>("SELECT vehicle_id FROM known_vehicles").toArray().map((r) => r.vehicle_id)
+    );
+
+    // Pull latest trip delays from DO SQLite so live vehicles reflect GTFS-RT TripUpdates immediately
+    const delayMap = new Map<string, number>();
+    for (const tu of this.ctx.storage.sql
+      .exec<{ trip_id: string; delay_sec: number | null }>("SELECT trip_id, delay_sec FROM live_trip_updates WHERE delay_sec IS NOT NULL")
+      .toArray()) {
+      if (tu.delay_sec !== null) delayMap.set(tu.trip_id, tu.delay_sec);
     }
 
     const upserts: LiveVehicleState[] = [];
+    const changedObservations: Observation[] = [];
+    const newVehicles: Observation[] = [];
+    const assignmentChanges: Observation[] = [];
     const seenIds = new Set<string>();
+
+    let accepted = 0;
+    let rejected = 0;
+    let duplicates = 0;
 
     for (const obs of input.observations) {
       seenIds.add(obs.sourceVehicleId);
+      const prevEntry = existingMap.get(obs.sourceVehicleId);
+      const prevObs: Observation | null = prevEntry
+        ? {
+            ...obs,
+            lat: prevEntry.state.lat,
+            lon: prevEntry.state.lon,
+            observedAt: prevEntry.state.observedAt,
+            receivedAt: prevEntry.state.receivedAt,
+          }
+        : null;
+
+      const check = validateObservationQuality(obs, prevObs);
+      if (!check.valid) {
+        rejected++;
+        continue;
+      }
+
+      accepted++;
       const obsMs = obs.observedAt ? Date.parse(obs.observedAt) : Date.parse(obs.receivedAt);
       const rxMs = Date.parse(obs.receivedAt);
-      const prev = existingMap.get(obs.sourceVehicleId);
 
       // Preserve newer live state when out-of-order data arrives (PRD §6.4)
-      if (prev && obsMs < prev.observed_ms) {
+      if (prevEntry && obsMs < prevEntry.row.observed_ms) {
         continue;
+      }
+
+      const scheduleDeviationSec =
+        obs.scheduleDeviationSec ??
+        (obs.tripId ? delayMap.get(obs.tripId) ?? null : null) ??
+        prevEntry?.state.scheduleDeviationSec ??
+        null;
+
+      const cleaned: Observation = {
+        ...obs,
+        scheduleDeviationSec,
+        qualityFlags: check.flags,
+      };
+
+      const isDuplicate =
+        prevEntry &&
+        prevEntry.state.observedAt === cleaned.observedAt &&
+        Math.abs(prevEntry.state.lat - cleaned.lat) < 0.00001 &&
+        Math.abs(prevEntry.state.lon - cleaned.lon) < 0.00001 &&
+        prevEntry.state.tripId === cleaned.tripId;
+
+      if (isDuplicate) {
+        duplicates++;
+      } else {
+        changedObservations.push(cleaned);
+      }
+
+      if (!knownSet.has(cleaned.vehicleId)) {
+        knownSet.add(cleaned.vehicleId);
+        this.ctx.storage.sql.exec(
+          "INSERT OR IGNORE INTO known_vehicles (vehicle_id, first_seen_ms) VALUES (?, ?)",
+          cleaned.vehicleId,
+          nowMs
+        );
+        newVehicles.push(cleaned);
+      }
+
+      // Only record a D1 assignment write when a vehicle starts or switches route/trip
+      const assignmentChanged =
+        (cleaned.routeId || cleaned.tripId) &&
+        (!prevEntry || prevEntry.state.routeId !== cleaned.routeId || prevEntry.state.tripId !== cleaned.tripId);
+      if (assignmentChanged) {
+        assignmentChanges.push(cleaned);
       }
 
       const state: LiveVehicleState = this.hydrateVehicle(
         {
-          agencyId: obs.agencyId,
-          sourceVehicleId: obs.sourceVehicleId,
-          vehicleId: obs.vehicleId,
-          fleetNumber: obs.fleetNumber,
-          label: obs.label,
-          routeId: obs.routeId,
-          tripId: obs.tripId,
-          blockId: obs.blockId,
-          directionId: obs.directionId,
-          lat: obs.lat,
-          lon: obs.lon,
-          bearingDeg: obs.bearingDeg,
-          speedMps: obs.speedMps,
-          scheduleDeviationSec: obs.scheduleDeviationSec,
-          currentStatus: obs.currentStatus,
-          stopId: obs.stopId,
-          stopSequence: obs.stopSequence,
-          occupancyStatus: obs.occupancyStatus,
-          observedAt: obs.observedAt,
-          receivedAt: obs.receivedAt,
-          timestampBasis: obs.timestampBasis,
+          agencyId: cleaned.agencyId,
+          sourceVehicleId: cleaned.sourceVehicleId,
+          vehicleId: cleaned.vehicleId,
+          fleetNumber: cleaned.fleetNumber,
+          label: cleaned.label,
+          routeId: cleaned.routeId,
+          tripId: cleaned.tripId,
+          blockId: cleaned.blockId,
+          directionId: cleaned.directionId,
+          lat: cleaned.lat,
+          lon: cleaned.lon,
+          bearingDeg: cleaned.bearingDeg,
+          speedMps: cleaned.speedMps,
+          scheduleDeviationSec: cleaned.scheduleDeviationSec,
+          currentStatus: cleaned.currentStatus,
+          stopId: cleaned.stopId,
+          stopSequence: cleaned.stopSequence,
+          occupancyStatus: cleaned.occupancyStatus,
+          observedAt: cleaned.observedAt,
+          receivedAt: cleaned.receivedAt,
+          timestampBasis: cleaned.timestampBasis,
           ageSeconds: 0,
           freshness: "fresh",
-          qualityFlags: obs.qualityFlags,
-          matchMethod: obs.matchMethod,
-          matchConfidence: obs.matchConfidence,
+          qualityFlags: cleaned.qualityFlags,
+          matchMethod: cleaned.matchMethod,
+          matchConfidence: cleaned.matchConfidence,
         },
         nowMs
       );
 
       this.ctx.storage.sql.exec(
-        `INSERT INTO live_vehicles (source_vehicle_id, route_id, observed_ms, received_ms, payload_json)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO live_vehicles (source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source_vehicle_id) DO UPDATE SET
+           vehicle_id = excluded.vehicle_id,
            route_id = excluded.route_id,
+           trip_id = excluded.trip_id,
            observed_ms = excluded.observed_ms,
            received_ms = excluded.received_ms,
            payload_json = excluded.payload_json`,
-        obs.sourceVehicleId,
-        obs.routeId,
+        cleaned.sourceVehicleId,
+        cleaned.vehicleId,
+        cleaned.routeId,
+        cleaned.tripId,
         obsMs,
         rxMs,
         JSON.stringify(state)
@@ -178,8 +312,8 @@ export class AgencyLiveDO extends DurableObject<Env> {
     const removed: string[] = [];
     if (input.incrementality === "FULL_DATASET" && input.observations.length > 0) {
       const expireBeforeMs = nowMs - Math.max(600_000, this.staleAfterSeconds * 4 * 1000);
-      for (const [id, row] of existingMap) {
-        if (!seenIds.has(id) && row.received_ms < expireBeforeMs) {
+      for (const [id, entry] of existingMap) {
+        if (!seenIds.has(id) && entry.row.received_ms < expireBeforeMs) {
           this.ctx.storage.sql.exec("DELETE FROM live_vehicles WHERE source_vehicle_id = ?", id);
           removed.push(id);
         }
@@ -206,10 +340,109 @@ export class AgencyLiveDO extends DurableObject<Env> {
     );
     this.ctx.storage.sql.exec("DELETE FROM delta_log WHERE cursor < ?", this.cursor - 120);
 
-    // Broadcast to hibernated WebSockets
     this.broadcastDelta(deltaMsg);
 
-    return { cursor: this.cursor, upserts: upserts.length, removed: removed.length };
+    return {
+      cursor: this.cursor,
+      upserts: upserts.length,
+      removed: removed.length,
+      accepted,
+      rejected,
+      duplicates,
+      changedObservations,
+      newVehicles,
+      assignmentChanges,
+    };
+  }
+
+  async ingestTripUpdates(tripUpdates: NormalizedTripUpdate[]): Promise<{ stored: number }> {
+    const nowMs = Date.now();
+    for (const tu of tripUpdates.slice(0, 600)) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO live_trip_updates (trip_id, service_date, route_id, vehicle_id, delay_sec, payload_json, updated_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(trip_id) DO UPDATE SET
+           service_date = excluded.service_date,
+           route_id = COALESCE(excluded.route_id, live_trip_updates.route_id),
+           vehicle_id = COALESCE(excluded.vehicle_id, live_trip_updates.vehicle_id),
+           delay_sec = excluded.delay_sec,
+           payload_json = excluded.payload_json,
+           updated_ms = excluded.updated_ms`,
+        tu.tripId,
+        tu.serviceDate,
+        tu.routeId,
+        tu.vehicleId,
+        tu.delaySec,
+        JSON.stringify({ ...tu, stopUpdates: tu.stopUpdates.slice(0, 40) }),
+        nowMs
+      );
+    }
+    // Prune stale trip updates older than 4 hours
+    this.ctx.storage.sql.exec("DELETE FROM live_trip_updates WHERE updated_ms < ?", nowMs - 4 * 3600 * 1000);
+    return { stored: Math.min(600, tripUpdates.length) };
+  }
+
+  async getTripUpdates(filters?: { serviceDate?: string; tripId?: string }): Promise<NormalizedTripUpdate[]> {
+    const rows = filters?.tripId
+      ? this.ctx.storage.sql
+          .exec<StoredTripUpdateRow>("SELECT * FROM live_trip_updates WHERE trip_id = ? LIMIT 1", filters.tripId)
+          .toArray()
+      : filters?.serviceDate
+        ? this.ctx.storage.sql
+            .exec<StoredTripUpdateRow>(
+              "SELECT * FROM live_trip_updates WHERE service_date = ? ORDER BY updated_ms DESC LIMIT 500",
+              filters.serviceDate
+            )
+            .toArray()
+        : this.ctx.storage.sql
+            .exec<StoredTripUpdateRow>("SELECT * FROM live_trip_updates ORDER BY updated_ms DESC LIMIT 500")
+            .toArray();
+    return rows.map((r) => JSON.parse(r.payload_json) as NormalizedTripUpdate);
+  }
+
+  async getVehicle(vehicleId: string): Promise<LiveVehicleState | null> {
+    const rows = this.ctx.storage.sql
+      .exec<{ payload_json: string }>(
+        "SELECT payload_json FROM live_vehicles WHERE vehicle_id = ? OR source_vehicle_id = ? LIMIT 1",
+        vehicleId,
+        vehicleId
+      )
+      .toArray();
+    if (!rows[0]) return null;
+    return this.hydrateVehicle(JSON.parse(rows[0].payload_json) as LiveVehicleState, Date.now());
+  }
+
+  async getVehicleByTrip(tripId: string): Promise<LiveVehicleState | null> {
+    const rows = this.ctx.storage.sql
+      .exec<{ payload_json: string }>("SELECT payload_json FROM live_vehicles WHERE trip_id = ? LIMIT 1", tripId)
+      .toArray();
+    if (!rows[0]) return null;
+    return this.hydrateVehicle(JSON.parse(rows[0].payload_json) as LiveVehicleState, Date.now());
+  }
+
+  async getStats(): Promise<{
+    activeCount: number;
+    routeCounts: Record<string, number>;
+    feedStatus: FeedHealthStatus;
+    lastSuccessAt: string | null;
+  }> {
+    const rows = this.ctx.storage.sql
+      .exec<{ route_id: string | null; c: number }>(
+        "SELECT route_id, COUNT(*) as c FROM live_vehicles GROUP BY route_id"
+      )
+      .toArray();
+    let activeCount = 0;
+    const routeCounts: Record<string, number> = {};
+    for (const r of rows) {
+      activeCount += r.c;
+      if (r.route_id) routeCounts[r.route_id] = r.c;
+    }
+    return {
+      activeCount,
+      routeCounts,
+      feedStatus: this.feedStatus,
+      lastSuccessAt: this.lastSuccessAt,
+    };
   }
 
   async updateFeedStatus(input: {
@@ -264,13 +497,13 @@ export class AgencyLiveDO extends DurableObject<Env> {
     const rows = filters?.routeId
       ? this.ctx.storage.sql
           .exec<StoredVehicleRow>(
-            "SELECT source_vehicle_id, route_id, observed_ms, received_ms, payload_json FROM live_vehicles WHERE route_id = ?",
+            "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles WHERE route_id = ?",
             filters.routeId
           )
           .toArray()
       : this.ctx.storage.sql
           .exec<StoredVehicleRow>(
-            "SELECT source_vehicle_id, route_id, observed_ms, received_ms, payload_json FROM live_vehicles"
+            "SELECT source_vehicle_id, vehicle_id, route_id, trip_id, observed_ms, received_ms, payload_json FROM live_vehicles"
           )
           .toArray();
 

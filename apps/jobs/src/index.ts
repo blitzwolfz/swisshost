@@ -75,30 +75,17 @@ async function rollupRecentAnalytics(env: Env): Promise<void> {
 
   const agencies = await env.DB.prepare("SELECT id FROM agencies WHERE enabled = 1").all<{ id: string }>();
   for (const ag of agencies.results) {
-    const rows = await env.DB.prepare(
-      `SELECT route_id, schedule_deviation_sec, observed_at, received_at
-       FROM vehicle_latest WHERE agency_id = ?`
-    )
-      .bind(ag.id)
-      .all<{
-        route_id: string | null;
-        schedule_deviation_sec: number | null;
-        observed_at: string | null;
-        received_at: string;
-      }>();
-
-    if (rows.results.length === 0) continue;
+    const snap = await env.AGENCY_LIVE.getByName(ag.id).getSnapshot({ agencyId: ag.id });
+    if (snap.vehicles.length === 0) continue;
 
     const byRoute = new Map<string, number[]>();
     let freshCount = 0;
-    const nowMs = now.getTime();
-    for (const r of rows.results) {
-      const refMs = Date.parse(r.observed_at ?? r.received_at);
-      if ((nowMs - refMs) / 1000 <= 120) freshCount++;
-      if (r.route_id && r.schedule_deviation_sec !== null) {
-        const list = byRoute.get(r.route_id) ?? [];
-        list.push(r.schedule_deviation_sec);
-        byRoute.set(r.route_id, list);
+    for (const v of snap.vehicles) {
+      if (v.freshness !== "stale") freshCount++;
+      if (v.routeId && v.scheduleDeviationSec !== null) {
+        const list = byRoute.get(v.routeId) ?? [];
+        list.push(v.scheduleDeviationSec);
+        byRoute.set(v.routeId, list);
       }
     }
 
@@ -117,9 +104,9 @@ async function rollupRecentAnalytics(env: Env): Promise<void> {
         `${ag.id}:hour:${bucketStart}:coverage`,
         ag.id,
         bucketStart,
-        rows.results.length,
-        JSON.stringify({ observedVehicles: rows.results.length, freshVehicles: freshCount }),
-        Number((freshCount / rows.results.length).toFixed(3)),
+        snap.vehicles.length,
+        JSON.stringify({ observedVehicles: snap.vehicles.length, freshVehicles: freshCount }),
+        Number((freshCount / snap.vehicles.length).toFixed(3)),
         ANALYTICS_ALGORITHM_VERSION,
         now.toISOString()
       ),

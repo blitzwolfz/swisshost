@@ -31,6 +31,8 @@ export class FeedSchedulerDO extends DurableObject<Env> {
   private lastModified: string | null = null;
   private lastAlarmLatenessMs = 0;
   private nextDueMs = 0;
+  private lastD1StatusSyncMs = 0;
+  private lastSyncedStatus = "";
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -382,6 +384,15 @@ export class FeedSchedulerDO extends DurableObject<Env> {
       duplicateRatio?: number;
     }
   ): Promise<void> {
+    // Throttle routine identical-status D1 metadata writes to once every 3 minutes to conserve Free D1 quota
+    const nowMs = Date.now();
+    const statusChanged = patch.status !== this.lastSyncedStatus;
+    if (!statusChanged && nowMs - this.lastD1StatusSyncMs < 180_000) {
+      return;
+    }
+    this.lastD1StatusSyncMs = nowMs;
+    this.lastSyncedStatus = patch.status;
+
     await this.env.DB.prepare(
       `UPDATE feeds SET
         status = ?,

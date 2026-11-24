@@ -162,17 +162,23 @@ app.get("/api/v1/agencies", async (c) => {
     `SELECT id, agency_id, kind, status, last_success_at, last_source_ts, last_entity_count, last_error, stale_after_seconds, enabled
      FROM feeds`
   ).all<Record<string, unknown>>();
-  const activeCounts = await c.env.DB.prepare(
-    `SELECT agency_id, COUNT(*) as count FROM vehicle_latest GROUP BY agency_id`
-  ).all<{ agency_id: string; count: number }>();
 
-  const countMap = new Map(activeCounts.results.map((r) => [r.agency_id, r.count]));
+  const statsList = await Promise.all(
+    agencies.results.map(async (a) => {
+      const id = String(a.id);
+      const stats = await c.env.AGENCY_LIVE.getByName(id).getStats().catch(() => null);
+      return [id, stats] as const;
+    })
+  );
+  const statsMap = new Map(statsList);
 
   const data = agencies.results.map((a) => {
-    const aFeeds = feeds.results.filter((f) => f.agency_id === a.id);
+    const id = String(a.id);
+    const aFeeds = feeds.results.filter((f) => f.agency_id === id);
     const posFeed = aFeeds.find((f) => f.kind === "vehicle_positions");
+    const liveStats = statsMap.get(id);
     return {
-      id: a.id,
+      id,
       name: a.name,
       shortName: a.short_name,
       region: a.region,
@@ -184,10 +190,10 @@ app.get("/api/v1/agencies", async (c) => {
       licenseUrl: a.license_url,
       archivePolicy: a.archive_policy,
       capabilities: JSON.parse(String(a.capabilities_json || "{}")),
-      liveStatus: posFeed?.status ?? "unknown",
-      lastSuccessAt: posFeed?.last_success_at ?? null,
+      liveStatus: posFeed?.status === "missing_key" ? "missing_key" : (liveStats?.feedStatus ?? posFeed?.status ?? "unknown"),
+      lastSuccessAt: liveStats?.lastSuccessAt ?? posFeed?.last_success_at ?? null,
       lastError: posFeed?.last_error ?? null,
-      activeVehicleCount: countMap.get(String(a.id)) ?? 0,
+      activeVehicleCount: liveStats?.activeCount ?? 0,
       feeds: aFeeds,
     };
   });
@@ -353,45 +359,75 @@ app.get("/api/v1/agencies/:id/vehicles", async (c) => {
 // Fleet directory + vehicle detail (F05, F07)
 app.get("/api/v1/agencies/:id/fleet", async (c) => {
   const agencyId = c.req.param("id");
-  const q = c.req.query("q")?.trim() || "";
+  const q = c.req.query("q")?.trim().toLowerCase() || "";
   const limit = Math.min(200, Math.max(10, Number(c.req.query("limit") || "100")));
   const offset = Math.max(0, Number(c.req.query("offset") || "0"));
 
-  const like = `%${q}%`;
-  const rows = q
-    ? await c.env.DB.prepare(
-        `SELECT v.*, vl.route_id, vl.trip_id, vl.lat, vl.lon, vl.speed_mps, vl.bearing_deg,
-                vl.schedule_deviation_sec, vl.observed_at as live_observed_at, vl.received_at as live_received_at
-         FROM vehicles v
-         LEFT JOIN vehicle_latest vl ON vl.agency_id = v.agency_id AND vl.vehicle_id = v.vehicle_id
-         WHERE v.agency_id = ? AND (v.fleet_number LIKE ? OR v.vehicle_id LIKE ? OR COALESCE(v.model, '') LIKE ? OR COALESCE(vl.route_id, '') LIKE ?)
-         ORDER BY v.last_seen_at DESC
-         LIMIT ? OFFSET ?`
-      )
-        .bind(agencyId, like, like, like, like, limit, offset)
-        .all()
-    : await c.env.DB.prepare(
-        `SELECT v.*, vl.route_id, vl.trip_id, vl.lat, vl.lon, vl.speed_mps, vl.bearing_deg,
-                vl.schedule_deviation_sec, vl.observed_at as live_observed_at, vl.received_at as live_received_at
-         FROM vehicles v
-         LEFT JOIN vehicle_latest vl ON vl.agency_id = v.agency_id AND vl.vehicle_id = v.vehicle_id
-         WHERE v.agency_id = ?
-         ORDER BY v.last_seen_at DESC
-         LIMIT ? OFFSET ?`
-      )
-        .bind(agencyId, limit, offset)
-        .all();
+  const [dbRows, liveSnap] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT * FROM vehicles WHERE agency_id = ? ORDER BY last_seen_at DESC LIMIT 600`
+    )
+      .bind(agencyId)
+      .all<Record<string, unknown>>(),
+    c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId }),
+  ]);
 
-  const total = await c.env.DB.prepare("SELECT COUNT(*) as c FROM vehicles WHERE agency_id = ?")
-    .bind(agencyId)
-    .first<{ c: number }>();
+  const liveById = new Map(liveSnap.vehicles.map((v) => [v.vehicleId, v]));
+  const merged = new Map<string, Record<string, unknown>>();
+
+  for (const r of dbRows.results) {
+    const vid = String(r.vehicle_id);
+    const live = liveById.get(vid);
+    merged.set(vid, {
+      ...r,
+      route_id: live?.routeId ?? null,
+      trip_id: live?.tripId ?? null,
+      lat: live?.lat ?? null,
+      lon: live?.lon ?? null,
+      speed_mps: live?.speedMps ?? null,
+      bearing_deg: live?.bearingDeg ?? null,
+      schedule_deviation_sec: live?.scheduleDeviationSec ?? null,
+      last_seen_at: live?.observedAt ?? live?.receivedAt ?? r.last_seen_at,
+    });
+  }
+  for (const live of liveSnap.vehicles) {
+    if (!merged.has(live.vehicleId)) {
+      merged.set(live.vehicleId, {
+        agency_id: agencyId,
+        vehicle_id: live.vehicleId,
+        fleet_number: live.fleetNumber,
+        vehicle_type: "unknown",
+        manufacturer: null,
+        model: null,
+        year: null,
+        route_id: live.routeId,
+        trip_id: live.tripId,
+        speed_mps: live.speedMps,
+        schedule_deviation_sec: live.scheduleDeviationSec,
+        last_seen_at: live.observedAt ?? live.receivedAt,
+        metadata_source: "observed",
+      });
+    }
+  }
+
+  let list = Array.from(merged.values());
+  if (q) {
+    list = list.filter(
+      (v) =>
+        String(v.fleet_number ?? "").toLowerCase().includes(q) ||
+        String(v.vehicle_id ?? "").toLowerCase().includes(q) ||
+        String(v.model ?? "").toLowerCase().includes(q) ||
+        String(v.route_id ?? "").toLowerCase().includes(q)
+    );
+  }
+  list.sort((a, b) => Date.parse(String(b.last_seen_at ?? 0)) - Date.parse(String(a.last_seen_at ?? 0)));
 
   return c.json({
     agencyId,
-    total: total?.c ?? 0,
+    total: list.length,
     limit,
     offset,
-    vehicles: rows.results,
+    vehicles: list.slice(offset, offset + limit),
   });
 });
 
@@ -399,13 +435,11 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
   const agencyId = c.req.param("id");
   const vehicleId = decodeURIComponent(c.req.param("vehicle"));
 
-  const [vehicle, latest, aliases, assignments] = await Promise.all([
+  const [vehicle, liveVeh, aliases, assignments] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM vehicles WHERE agency_id = ? AND (vehicle_id = ? OR fleet_number = ?) LIMIT 1")
       .bind(agencyId, vehicleId, vehicleId)
       .first<Record<string, unknown>>(),
-    c.env.DB.prepare("SELECT * FROM vehicle_latest WHERE agency_id = ? AND (vehicle_id = ? OR fleet_number = ?) LIMIT 1")
-      .bind(agencyId, vehicleId, vehicleId)
-      .first<Record<string, unknown>>(),
+    c.env.AGENCY_LIVE.getByName(agencyId).getVehicle(vehicleId),
     c.env.DB.prepare("SELECT * FROM vehicle_aliases WHERE agency_id = ? AND vehicle_id = ? ORDER BY valid_from DESC")
       .bind(agencyId, vehicleId)
       .all(),
@@ -416,6 +450,33 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
       .bind(agencyId, vehicleId)
       .all(),
   ]);
+
+  const latest = liveVeh
+    ? {
+        agency_id: liveVeh.agencyId,
+        source_vehicle_id: liveVeh.sourceVehicleId,
+        vehicle_id: liveVeh.vehicleId,
+        fleet_number: liveVeh.fleetNumber,
+        route_id: liveVeh.routeId,
+        trip_id: liveVeh.tripId,
+        block_id: liveVeh.blockId,
+        direction_id: liveVeh.directionId,
+        lat: liveVeh.lat,
+        lon: liveVeh.lon,
+        bearing_deg: liveVeh.bearingDeg,
+        speed_mps: liveVeh.speedMps,
+        schedule_deviation_sec: liveVeh.scheduleDeviationSec,
+        current_status: liveVeh.currentStatus,
+        stop_id: liveVeh.stopId,
+        stop_sequence: liveVeh.stopSequence,
+        occupancy_status: liveVeh.occupancyStatus,
+        observed_at: liveVeh.observedAt,
+        received_at: liveVeh.receivedAt,
+        timestamp_basis: liveVeh.timestampBasis,
+        match_method: liveVeh.matchMethod,
+        match_confidence: liveVeh.matchConfidence,
+      }
+    : null;
 
   if (!vehicle && !latest) {
     return c.json(
@@ -432,7 +493,7 @@ app.get("/api/v1/agencies/:id/vehicles/:vehicle", async (c) => {
       fleet_number: latest?.fleet_number,
       metadata_source: "observed",
     },
-    latest: latest ?? null,
+    latest,
     aliases: aliases.results,
     recentAssignments: assignments.results,
   });
@@ -677,7 +738,7 @@ app.get("/api/v1/agencies/:id/routes", async (c) => {
   const agencyId = c.req.param("id");
   const versionId = await getActiveVersionId(c.env.DB, agencyId);
 
-  const [staticRoutes, activeByRoute, alertCounts] = await Promise.all([
+  const [staticRoutes, liveStats, alertCounts] = await Promise.all([
     versionId
       ? c.env.DB.prepare(
           `SELECT route_id, short_name, long_name, description, route_type, color, text_color, sort_order, directions_json
@@ -686,12 +747,7 @@ app.get("/api/v1/agencies/:id/routes", async (c) => {
           .bind(agencyId, versionId)
           .all<Record<string, unknown>>()
       : Promise.resolve({ results: [] as Array<Record<string, unknown>> }),
-    c.env.DB.prepare(
-      `SELECT route_id, COUNT(*) as active_vehicles FROM vehicle_latest
-       WHERE agency_id = ? AND route_id IS NOT NULL GROUP BY route_id`
-    )
-      .bind(agencyId)
-      .all<{ route_id: string; active_vehicles: number }>(),
+    c.env.AGENCY_LIVE.getByName(agencyId).getStats(),
     c.env.DB.prepare(
       `SELECT informed_entities_json FROM service_alerts WHERE agency_id = ? AND active = 1`
     )
@@ -699,7 +755,7 @@ app.get("/api/v1/agencies/:id/routes", async (c) => {
       .all<{ informed_entities_json: string }>(),
   ]);
 
-  const activeMap = new Map(activeByRoute.results.map((r) => [r.route_id, r.active_vehicles]));
+  const activeMap = new Map(Object.entries(liveStats.routeCounts));
   const alertMap = new Map<string, number>();
   for (const al of alertCounts.results) {
     const ents = JSON.parse(al.informed_entities_json || "[]") as Array<{ routeId?: string }>;
@@ -899,7 +955,8 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
 
   const resolvedStopId = stop ? String(stop.stop_id) : stopId;
 
-  const [scheduledRows, tripUpdateRows, liveSnap, alerts] = await Promise.all([
+  const liveStub = c.env.AGENCY_LIVE.getByName(agencyId);
+  const [scheduledRows, liveTripUpdates, liveSnap, alerts] = await Promise.all([
     versionId
       ? c.env.DB.prepare(
           `SELECT st.trip_id, st.stop_sequence, st.arrival_sec, st.departure_sec,
@@ -913,19 +970,14 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
           .bind(agencyId, versionId, resolvedStopId, ctx.serviceSeconds - 300, ctx.serviceSeconds + 7200)
           .all<Record<string, unknown>>()
       : Promise.resolve({ results: [] as Array<Record<string, unknown>> }),
-    c.env.DB.prepare(
-      `SELECT trip_id, route_id, vehicle_id, schedule_relationship, delay_sec, stop_updates_json, observed_at
-       FROM trip_updates WHERE agency_id = ? AND service_date = ?`
-    )
-      .bind(agencyId, ctx.serviceDate)
-      .all<Record<string, unknown>>(),
-    c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId }),
+    liveStub.getTripUpdates({ serviceDate: ctx.serviceDate }),
+    liveStub.getSnapshot({ agencyId }),
     c.env.DB.prepare("SELECT * FROM service_alerts WHERE agency_id = ? AND active = 1")
       .bind(agencyId)
       .all<Record<string, unknown>>(),
   ]);
 
-  const tuByTrip = new Map(tripUpdateRows.results.map((r) => [String(r.trip_id), r]));
+  const tuByTrip = new Map(liveTripUpdates.map((r) => [r.tripId, r]));
   const vehByTrip = new Map(liveSnap.vehicles.filter((v) => v.tripId).map((v) => [v.tripId!, v]));
 
   const departures: Array<Record<string, unknown>> = [];
@@ -939,15 +991,9 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
     const schedEpochMs = nowMs + deltaFromNowSec * 1000;
 
     let agencyPredMs: number | null = null;
-    let stopRel = String(tu?.schedule_relationship ?? "SCHEDULED");
-    if (tu?.stop_updates_json) {
-      const updates = JSON.parse(String(tu.stop_updates_json)) as Array<{
-        stopId?: string;
-        arrivalTime?: string;
-        departureTime?: string;
-        scheduleRelationship?: string;
-      }>;
-      const matchStop = updates.find((u) => u.stopId === resolvedStopId);
+    let stopRel = tu?.scheduleRelationship ?? "SCHEDULED";
+    if (tu?.stopUpdates) {
+      const matchStop = tu.stopUpdates.find((u) => u.stopId === resolvedStopId);
       if (matchStop) {
         if (matchStop.scheduleRelationship) stopRel = matchStop.scheduleRelationship;
         const iso = matchStop.departureTime ?? matchStop.arrivalTime;
@@ -964,7 +1010,7 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
       nowEpochMs: nowMs,
       scheduledEpochMs: schedEpochMs,
       agencyPredictedEpochMs: agencyPredMs,
-      currentDelaySec: tu?.delay_sec !== undefined && tu?.delay_sec !== null ? Number(tu.delay_sec) : null,
+      currentDelaySec: tu?.delaySec ?? null,
       distanceRemainingMeters: distMeters,
     });
 
@@ -974,7 +1020,7 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
       headsign: row.headsign,
       directionId: row.direction_id,
       blockId: row.block_id,
-      vehicleId: veh?.vehicleId ?? tu?.vehicle_id ?? null,
+      vehicleId: veh?.vehicleId ?? tu?.vehicleId ?? null,
       fleetNumber: veh?.fleetNumber ?? null,
       scheduleRelationship: stopRel,
       scheduledTime: formatSecondsToClock(schedSec),
@@ -992,30 +1038,22 @@ app.get("/api/v1/agencies/:id/stops/:stop/arrivals", async (c) => {
 
   // Also include live TripUpdates referencing this stop if static schedule isn't loaded
   if (departures.length === 0) {
-    for (const tu of tripUpdateRows.results) {
-      const updates = JSON.parse(String(tu.stop_updates_json || "[]")) as Array<{
-        stopId?: string;
-        arrivalTime?: string;
-        departureTime?: string;
-        arrivalDelaySec?: number;
-        departureDelaySec?: number;
-        scheduleRelationship?: string;
-      }>;
-      const matchStop = updates.find((u) => u.stopId === resolvedStopId);
+    for (const tu of liveTripUpdates) {
+      const matchStop = tu.stopUpdates.find((u) => u.stopId === resolvedStopId);
       if (!matchStop) continue;
       const iso = matchStop.departureTime ?? matchStop.arrivalTime;
-      const predMs = iso ? Date.parse(iso) : nowMs + Math.max(60, Number(tu.delay_sec ?? 300)) * 1000;
+      const predMs = iso ? Date.parse(iso) : nowMs + Math.max(60, tu.delaySec ?? 300) * 1000;
       const prediction = predictStopArrival({
         nowEpochMs: nowMs,
         scheduledEpochMs: null,
         agencyPredictedEpochMs: predMs,
       });
       departures.push({
-        tripId: tu.trip_id,
-        routeId: tu.route_id,
+        tripId: tu.tripId,
+        routeId: tu.routeId,
         headsign: null,
-        vehicleId: tu.vehicle_id,
-        scheduleRelationship: matchStop.scheduleRelationship ?? tu.schedule_relationship,
+        vehicleId: tu.vehicleId,
+        scheduleRelationship: matchStop.scheduleRelationship ?? tu.scheduleRelationship,
         scheduledTime: "—",
         predictedTime: new Date(prediction.predictedEpochMs).toISOString(),
         etaSeconds: prediction.etaSeconds,
@@ -1082,7 +1120,8 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
     .first<{ timezone: string }>();
   const serviceDate = c.req.query("date") || getLocalServiceContext(new Date(), agency?.timezone ?? "America/Toronto").serviceDate;
 
-  const [tripRow, stopTimes, tripUpdate, assignments, liveVehicle] = await Promise.all([
+  const liveStub = c.env.AGENCY_LIVE.getByName(agencyId);
+  const [tripRow, stopTimes, liveTripUpdates, assignments, liveVeh] = await Promise.all([
     versionId
       ? c.env.DB.prepare("SELECT * FROM trips WHERE agency_id = ? AND version_id = ? AND trip_id = ?")
           .bind(agencyId, versionId, tripId)
@@ -1099,20 +1138,24 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
           .bind(agencyId, versionId, tripId)
           .all()
       : Promise.resolve({ results: [] }),
-    c.env.DB.prepare(
-      "SELECT * FROM trip_updates WHERE agency_id = ? AND service_date = ? AND trip_id = ?"
-    )
-      .bind(agencyId, serviceDate, tripId)
-      .first<Record<string, unknown>>(),
+    liveStub.getTripUpdates({ tripId }),
     c.env.DB.prepare(
       "SELECT * FROM vehicle_assignments WHERE agency_id = ? AND trip_id = ? AND service_date = ? ORDER BY started_at ASC"
     )
       .bind(agencyId, tripId, serviceDate)
       .all(),
-    c.env.DB.prepare("SELECT * FROM vehicle_latest WHERE agency_id = ? AND trip_id = ? LIMIT 1")
-      .bind(agencyId, tripId)
-      .first(),
+    liveStub.getVehicleByTrip(tripId),
   ]);
+
+  const tu = liveTripUpdates[0] ?? null;
+  const liveVehicle = liveVeh
+    ? {
+        vehicle_id: liveVeh.vehicleId,
+        fleet_number: liveVeh.fleetNumber,
+        observed_at: liveVeh.observedAt,
+        received_at: liveVeh.receivedAt,
+      }
+    : null;
 
   return c.json({
     agencyId,
@@ -1121,11 +1164,15 @@ app.get("/api/v1/agencies/:id/trips/:instance", async (c) => {
     staticVersionId: versionId,
     trip: tripRow,
     stopTimes: stopTimes.results,
-    tripUpdate: tripUpdate
-      ? { ...tripUpdate, stopUpdates: JSON.parse(String(tripUpdate.stop_updates_json || "[]")) }
+    tripUpdate: tu
+      ? {
+          schedule_relationship: tu.scheduleRelationship,
+          delay_sec: tu.delaySec,
+          stopUpdates: tu.stopUpdates,
+        }
       : null,
     assignments: assignments.results,
-    liveVehicle: liveVehicle ?? null,
+    liveVehicle,
     note: !liveVehicle
       ? "No live vehicle currently matched to this trip; absence of GPS does not imply cancellation."
       : null,
@@ -1227,17 +1274,10 @@ app.get("/api/v1/agencies/:id/analytics/:metric", async (c) => {
         .bind(agencyId, metric)
         .all<Record<string, unknown>>();
 
-  // Live fallback computation when buckets are still accumulating
-  const liveVehicles = await c.env.DB.prepare(
-    routeId
-      ? "SELECT route_id, schedule_deviation_sec, observed_at, received_at FROM vehicle_latest WHERE agency_id = ? AND route_id = ?"
-      : "SELECT route_id, schedule_deviation_sec, observed_at, received_at FROM vehicle_latest WHERE agency_id = ?"
-  )
-    .bind(...(routeId ? [agencyId, routeId] : [agencyId]))
-    .all<{ route_id: string | null; schedule_deviation_sec: number | null; observed_at: string | null; received_at: string }>();
-
-  const delays = liveVehicles.results
-    .map((r) => r.schedule_deviation_sec)
+  // Live fallback computation from AgencyLiveDO when buckets are still accumulating
+  const liveSnap = await c.env.AGENCY_LIVE.getByName(agencyId).getSnapshot({ agencyId, routeId });
+  const delays = liveSnap.vehicles
+    .map((v) => v.scheduleDeviationSec)
     .filter((d): d is number => d !== null);
 
   let summary: unknown;
@@ -1259,11 +1299,11 @@ app.get("/api/v1/agencies/:id/analytics/:metric", async (c) => {
     summary = backtestPredictions([]);
   } else {
     summary = {
-      observedVehicles: liveVehicles.results.length,
+      observedVehicles: liveSnap.vehicles.length,
       matchedWithDelay: delays.length,
       algorithmVersion: ANALYTICS_ALGORITHM_VERSION,
       note:
-        liveVehicles.results.length < 5
+        liveSnap.vehicles.length < 5
           ? "Insufficient historical sample size; metrics populate automatically as observations accumulate."
           : undefined,
     };
