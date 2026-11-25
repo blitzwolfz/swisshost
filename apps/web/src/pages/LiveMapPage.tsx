@@ -821,7 +821,11 @@ export default function LiveMapPage() {
             <div key={al.id} className="flex items-start gap-1.5">
               <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} aria-hidden="true" />
               <span>
-                <strong>{al.effect ? `${al.effect.replace(/_/g, " ")}: ` : "Service alert: "}</strong>
+                <strong>
+                  {al.effect && al.effect !== "UNKNOWN_EFFECT" && al.effect !== "OTHER_EFFECT"
+                    ? `${al.effect.replace(/_/g, " ")}: `
+                    : "Service alert: "}
+                </strong>
                 {al.header_text}
               </span>
             </div>
@@ -1455,7 +1459,11 @@ export default function LiveMapPage() {
                   <div key={al.id} className="flex items-start gap-1.5">
                     <AlertTriangle size={13} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} aria-hidden="true" />
                     <span>
-                      <strong>{al.effect ? `${al.effect.replace(/_/g, " ")}: ` : "Alert: "}</strong>
+                      <strong>
+                        {al.effect && al.effect !== "UNKNOWN_EFFECT" && al.effect !== "OTHER_EFFECT"
+                          ? `${al.effect.replace(/_/g, " ")}: `
+                          : "Service alert: "}
+                      </strong>
                       {al.headerText}
                     </span>
                   </div>
